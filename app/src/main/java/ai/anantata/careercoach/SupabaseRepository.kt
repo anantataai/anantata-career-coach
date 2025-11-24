@@ -125,8 +125,8 @@ class SupabaseRepository {
 
     suspend fun getAssessmentHistory(userId: String): List<AssessmentHistoryItem> = withContext(Dispatchers.IO) {
         try {
-            // HTTP GET запит
-            val url = URL("$baseUrl/rest/v1/assessment_results?user_id=eq.$userId&select=id,user_id,match_score,gap_analysis,action_plan,created_at&order=created_at.desc")
+            // HTTP GET запит - тепер включає answers
+            val url = URL("$baseUrl/rest/v1/assessment_results?user_id=eq.$userId&select=id,user_id,match_score,gap_analysis,action_plan,answers,created_at&order=created_at.desc")
             val connection = url.openConnection() as HttpURLConnection
 
             connection.apply {
@@ -151,6 +151,7 @@ class SupabaseRepository {
                         matchScore = obj.getInt("match_score"),
                         gapAnalysis = obj.getString("gap_analysis"),
                         actionPlan = obj.getString("action_plan"),
+                        answers = obj.optString("answers", "{}"),
                         createdAt = obj.getString("created_at")
                     )
                 )
@@ -233,5 +234,6 @@ data class AssessmentHistoryItem(
     val matchScore: Int,
     val gapAnalysis: String,
     val actionPlan: String,
+    val answers: String,
     val createdAt: String
 )

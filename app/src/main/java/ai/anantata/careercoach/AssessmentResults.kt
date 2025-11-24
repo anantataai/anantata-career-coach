@@ -1,14 +1,18 @@
 package ai.anantata.careercoach
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -146,17 +150,56 @@ fun parseAssessmentResults(gapAnalysis: String, actionPlan: String): ParsedAsses
     )
 }
 
+/**
+ * Функція для шерінгу результату
+ */
+fun shareResult(
+    context: Context,
+    goalAnswer: String,
+    salaryAnswer: String
+) {
+    val shareText = buildString {
+        appendLine("🎯 Моя мета: $goalAnswer")
+        appendLine("💰 Бажаний дохід: $salaryAnswer")
+        appendLine()
+        appendLine("✅ Сильні сторони визначено")
+        appendLine("📈 План з 10 кроків готовий!")
+        appendLine()
+        append("Пройди тест й отримай 10 кроків до своєї цілі 👉 https://anantata.ai")
+    }
+
+    val sendIntent = Intent().apply {
+        action = Intent.ACTION_SEND
+        putExtra(Intent.EXTRA_TEXT, shareText)
+        type = "text/plain"
+    }
+
+    val shareIntent = Intent.createChooser(sendIntent, "Поділитися результатом")
+    context.startActivity(shareIntent)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AssessmentResultsScreen(
     result: ParsedAssessmentResult,
+    isViewMode: Boolean = false,
+    goalAnswer: String = "",
+    salaryAnswer: String = "",
     onBackToChat: () -> Unit,
-    onRetakeAssessment: () -> Unit
+    onRetakeAssessment: () -> Unit,
+    onDiscussPlan: () -> Unit = {}
 ) {
+    val context = LocalContext.current
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Результати Assessment") },
+                title = {
+                    Text(
+                        if (isViewMode) "Перегляд результату"
+                        else "Результати Assessment"
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBackToChat) {
                         Icon(Icons.Default.ArrowBack, "Назад")
@@ -210,26 +253,91 @@ fun AssessmentResultsScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            // Кнопка "Поділитися"
             Button(
-                onClick = onRetakeAssessment,
-                modifier = Modifier.fillMaxWidth()
+                onClick = {
+                    shareResult(
+                        context = context,
+                        goalAnswer = goalAnswer.ifEmpty { "Досягти кар'єрної мети" },
+                        salaryAnswer = salaryAnswer.ifEmpty { "Збільшити дохід" }
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.secondary
+                )
             ) {
                 Icon(
-                    imageVector = Icons.Default.Refresh,
+                    imageVector = Icons.Default.Share,
                     contentDescription = null,
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Пройти Assessment знову")
+                Text("📤 Поділитися результатом")
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            OutlinedButton(
-                onClick = onBackToChat,
-                modifier = Modifier.fillMaxWidth()
+            // Кнопка "Обговорити з помічником"
+            Button(
+                onClick = onDiscussPlan,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
+                )
             ) {
-                Text("Повернутись до чату")
+                Text("💬 Обговорити з помічником")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Кнопки залежать від режиму
+            if (isViewMode) {
+                // Режим перегляду - кнопка "Назад до історії"
+                OutlinedButton(
+                    onClick = onBackToChat,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("← Назад до історії")
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = onRetakeAssessment,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Нова оцінка")
+                }
+            } else {
+                // Звичайний режим
+                Button(
+                    onClick = onRetakeAssessment,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Пройти Assessment знову")
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = onBackToChat,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Повернутись до чату")
+                }
             }
 
             Spacer(modifier = Modifier.height(32.dp))

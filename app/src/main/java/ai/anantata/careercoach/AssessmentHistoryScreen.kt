@@ -9,11 +9,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -26,7 +28,8 @@ import java.util.*
 fun AssessmentHistoryScreen(
     userId: String,
     onBack: () -> Unit,
-    onViewResult: (AssessmentHistoryItem) -> Unit
+    onViewResult: (AssessmentHistoryItem) -> Unit,
+    onDiscussPlan: (AssessmentHistoryItem) -> Unit
 ) {
     val supabaseRepo = remember { SupabaseRepository() }
     var assessments by remember { mutableStateOf<List<AssessmentHistoryItem>>(emptyList()) }
@@ -35,6 +38,7 @@ fun AssessmentHistoryScreen(
     var itemToDelete by remember { mutableStateOf<String?>(null) }
 
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     // Завантажити історію при відкритті екрану
     LaunchedEffect(Unit) {
@@ -103,6 +107,19 @@ fun AssessmentHistoryScreen(
                         AssessmentHistoryCard(
                             assessment = assessment,
                             onView = { onViewResult(assessment) },
+                            onShare = {
+                                // Парсимо відповіді для шерінгу
+                                val answersMap = parseAnswersFromJson(assessment.answers)
+                                val goalAnswer = answersMap["8"] ?: "Досягти кар'єрної мети"
+                                val salaryAnswer = answersMap["9"] ?: "Збільшити дохід"
+
+                                shareResult(
+                                    context = context,
+                                    goalAnswer = goalAnswer,
+                                    salaryAnswer = salaryAnswer
+                                )
+                            },
+                            onDiscuss = { onDiscussPlan(assessment) },
                             onDelete = { itemToDelete = assessment.id }
                         )
                     }
@@ -202,6 +219,8 @@ fun AssessmentHistoryScreen(
 fun AssessmentHistoryCard(
     assessment: AssessmentHistoryItem,
     onView: () -> Unit,
+    onShare: () -> Unit,
+    onDiscuss: () -> Unit,
     onDelete: () -> Unit
 ) {
     Card(
@@ -260,12 +279,11 @@ fun AssessmentHistoryCard(
             }
         }
 
-        // Кнопки
+        // Кнопки - Ряд 1: Переглянути та Видалити
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 16.dp),
+                .padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Button(
@@ -282,6 +300,48 @@ fun AssessmentHistoryCard(
                 )
             ) {
                 Text("×", fontSize = 20.sp)
+            }
+        }
+
+        // Кнопки - Ряд 2: Поділитися
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(top = 8.dp)
+        ) {
+            OutlinedButton(
+                onClick = onShare,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.secondary
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Share,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("📤 Поділитися")
+            }
+        }
+
+        // Кнопки - Ряд 3: Обговорити план
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(top = 8.dp, bottom = 16.dp)
+        ) {
+            Button(
+                onClick = onDiscuss,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Text("💬 Обговорити план")
             }
         }
     }
