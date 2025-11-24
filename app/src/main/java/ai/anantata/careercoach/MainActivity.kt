@@ -20,26 +20,24 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
-    // === ДОДАНО: Onboarding logic ===
     private val PREFS_NAME = "anantata_prefs"
     private val ONBOARDING_COMPLETED = "onboarding_completed"
-    // === КІНЕЦЬ ДОДАНО ===
+    private val FIRST_ASSESSMENT_COMPLETED = "first_assessment_completed" // ДОДАНО
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             AnantataCoachTheme {
-                // === ДОДАНО: Check onboarding ===
                 MainApp(
                     isOnboardingCompleted = isOnboardingCompleted(),
-                    onOnboardingComplete = { completeOnboarding() }
+                    isFirstAssessmentCompleted = isFirstAssessmentCompleted(), // ДОДАНО
+                    onOnboardingComplete = { completeOnboarding() },
+                    onFirstAssessmentComplete = { completeFirstAssessment() } // ДОДАНО
                 )
-                // === КІНЕЦЬ ДОДАНО (замінило простий ChatScreen()) ===
             }
         }
     }
 
-    // === ДОДАНО: Onboarding helper functions ===
     private fun isOnboardingCompleted(): Boolean {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return prefs.getBoolean(ONBOARDING_COMPLETED, false)
@@ -49,31 +47,147 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().putBoolean(ONBOARDING_COMPLETED, true).apply()
     }
-    // === КІНЕЦЬ ДОДАНО ===
+
+    // ДОДАНО: First assessment tracking
+    private fun isFirstAssessmentCompleted(): Boolean {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(FIRST_ASSESSMENT_COMPLETED, false)
+    }
+
+    private fun completeFirstAssessment() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(FIRST_ASSESSMENT_COMPLETED, true).apply()
+    }
 }
 
-// === ДОДАНО: Onboarding navigation wrapper ===
+// ОНОВЛЕНО: Тепер 3 стани - Onboarding, FirstAssessment, Chat
 @Composable
 fun MainApp(
     isOnboardingCompleted: Boolean,
-    onOnboardingComplete: () -> Unit
+    isFirstAssessmentCompleted: Boolean,
+    onOnboardingComplete: () -> Unit,
+    onFirstAssessmentComplete: () -> Unit
 ) {
     var showOnboarding by remember { mutableStateOf(!isOnboardingCompleted) }
+    var showFirstAssessment by remember { mutableStateOf(!isFirstAssessmentCompleted && isOnboardingCompleted) }
 
-    if (showOnboarding) {
-        OnboardingScreen(
-            onFinish = {
-                onOnboardingComplete()
-                showOnboarding = false
-            }
-        )
-    } else {
-        ChatScreen()
+    when {
+        // КРОК 1: Показати Onboarding якщо не завершено
+        showOnboarding -> {
+            OnboardingScreen(
+                onFinish = {
+                    onOnboardingComplete()
+                    showOnboarding = false
+                    showFirstAssessment = true // Після onboarding → assessment
+                }
+            )
+        }
+
+        // КРОК 2: Показати перший Assessment одразу після Onboarding
+        showFirstAssessment -> {
+            FirstAssessmentFlow(
+                onComplete = {
+                    onFirstAssessmentComplete()
+                    showFirstAssessment = false
+                }
+            )
+        }
+
+        // КРОК 3: Показати звичайний ChatScreen
+        else -> {
+            ChatScreen()
+        }
     }
 }
-// === КІНЕЦЬ ДОДАНО ===
 
-// === ВСЯ РЕШТА КОДУ БЕЗ ЗМІН ===
+// НОВИЙ: Обгортка для першого Assessment без діалогу вибору
+@Composable
+fun FirstAssessmentFlow(
+    onComplete: () -> Unit
+) {
+    val geminiRepo = remember { GeminiRepository() }
+    val supabaseRepo = remember { SupabaseRepository() }
+    val conversationId = remember { java.util.UUID.randomUUID().toString() }
+
+    var showResultsScreen by remember { mutableStateOf(false) }
+    var assessmentResult by remember { mutableStateOf<ParsedAssessmentResult?>(null) }
+    var isProcessing by remember { mutableStateOf(false) }
+
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        supabaseRepo.createConversation(conversationId)
+    }
+
+    if (showResultsScreen && assessmentResult != null) {
+        // Показати результати
+        AssessmentResultsScreen(
+            result = assessmentResult!!,
+            onBackToChat = {
+                onComplete() // Завершити first assessment flow
+            },
+            onRetakeAssessment = {
+                // Перепройти assessment
+                showResultsScreen = false
+                assessmentResult = null
+            }
+        )
+    } else if (isProcessing) {
+        // Показати loading під час обробки
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(modifier = Modifier.size(64.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Аналізую ваш профіль...",
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+        }
+    } else {
+        // Показати Assessment екран (ЗАВЖДИ повна версія - 15 питань)
+        AssessmentScreenUI(
+            assessmentType = "Повну", // ЗАВЖДИ повна версія
+            geminiRepo = geminiRepo,
+            onComplete = { answers ->
+                scope.launch {
+                    isProcessing = true
+
+                    try {
+                        val questions = geminiRepo.generateAssessmentQuestions("Повну")
+                        val gapAnalysis = geminiRepo.analyzeCareerGap(answers, questions)
+
+                        supabaseRepo.saveMessage(conversationId, "assistant", gapAnalysis)
+
+                        val actionPlan = geminiRepo.generateActionPlan(answers, questions, gapAnalysis)
+                        supabaseRepo.saveMessage(conversationId, "assistant", actionPlan)
+
+                        assessmentResult = parseAssessmentResults(gapAnalysis, actionPlan)
+
+                        showResultsScreen = true
+
+                    } catch (e: Exception) {
+                        // Якщо помилка - просто завершити flow
+                        onComplete()
+                    } finally {
+                        isProcessing = false
+                    }
+                }
+            },
+            onCancel = {
+                // Якщо користувач скасував - все одно завершити flow
+                onComplete()
+            }
+        )
+    }
+}
+
+// ============================================
+// ВСЯ РЕШТА КОДУ БЕЗ ЗМІН
+// ============================================
 
 @Composable
 fun ChatScreen() {
