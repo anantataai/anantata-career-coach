@@ -1,5 +1,6 @@
 package ai.anantata.careercoach
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,15 +19,61 @@ import ai.anantata.careercoach.ui.theme.AnantataCoachTheme
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+
+    // === ДОДАНО: Onboarding logic ===
+    private val PREFS_NAME = "anantata_prefs"
+    private val ONBOARDING_COMPLETED = "onboarding_completed"
+    // === КІНЕЦЬ ДОДАНО ===
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             AnantataCoachTheme {
-                ChatScreen()
+                // === ДОДАНО: Check onboarding ===
+                MainApp(
+                    isOnboardingCompleted = isOnboardingCompleted(),
+                    onOnboardingComplete = { completeOnboarding() }
+                )
+                // === КІНЕЦЬ ДОДАНО (замінило простий ChatScreen()) ===
             }
         }
     }
+
+    // === ДОДАНО: Onboarding helper functions ===
+    private fun isOnboardingCompleted(): Boolean {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(ONBOARDING_COMPLETED, false)
+    }
+
+    private fun completeOnboarding() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(ONBOARDING_COMPLETED, true).apply()
+    }
+    // === КІНЕЦЬ ДОДАНО ===
 }
+
+// === ДОДАНО: Onboarding navigation wrapper ===
+@Composable
+fun MainApp(
+    isOnboardingCompleted: Boolean,
+    onOnboardingComplete: () -> Unit
+) {
+    var showOnboarding by remember { mutableStateOf(!isOnboardingCompleted) }
+
+    if (showOnboarding) {
+        OnboardingScreen(
+            onFinish = {
+                onOnboardingComplete()
+                showOnboarding = false
+            }
+        )
+    } else {
+        ChatScreen()
+    }
+}
+// === КІНЕЦЬ ДОДАНО ===
+
+// === ВСЯ РЕШТА КОДУ БЕЗ ЗМІН ===
 
 @Composable
 fun ChatScreen() {
