@@ -2,6 +2,7 @@ package ai.anantata.careercoach
 
 import android.content.Context
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -9,6 +10,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,20 +26,37 @@ class MainActivity : ComponentActivity() {
 
     private val PREFS_NAME = "anantata_prefs"
     private val ONBOARDING_COMPLETED = "onboarding_completed"
-    private val FIRST_ASSESSMENT_COMPLETED = "first_assessment_completed" // ДОДАНО
+    private val FIRST_ASSESSMENT_COMPLETED = "first_assessment_completed"
+    private val USER_ID_KEY = "user_device_id"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val userId = getOrCreateUserId()
+
         setContent {
             AnantataCoachTheme {
                 MainApp(
+                    userId = userId,
                     isOnboardingCompleted = isOnboardingCompleted(),
-                    isFirstAssessmentCompleted = isFirstAssessmentCompleted(), // ДОДАНО
+                    isFirstAssessmentCompleted = isFirstAssessmentCompleted(),
                     onOnboardingComplete = { completeOnboarding() },
-                    onFirstAssessmentComplete = { completeFirstAssessment() } // ДОДАНО
+                    onFirstAssessmentComplete = { completeFirstAssessment() }
                 )
             }
         }
+    }
+
+    private fun getOrCreateUserId(): String {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        var userId = prefs.getString(USER_ID_KEY, null)
+
+        if (userId == null) {
+            userId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+            prefs.edit().putString(USER_ID_KEY, userId).apply()
+        }
+
+        return userId
     }
 
     private fun isOnboardingCompleted(): Boolean {
@@ -48,7 +69,6 @@ class MainActivity : ComponentActivity() {
         prefs.edit().putBoolean(ONBOARDING_COMPLETED, true).apply()
     }
 
-    // ДОДАНО: First assessment tracking
     private fun isFirstAssessmentCompleted(): Boolean {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return prefs.getBoolean(FIRST_ASSESSMENT_COMPLETED, false)
@@ -60,9 +80,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ОНОВЛЕНО: Тепер 3 стани - Onboarding, FirstAssessment, Chat
 @Composable
 fun MainApp(
+    userId: String,
     isOnboardingCompleted: Boolean,
     isFirstAssessmentCompleted: Boolean,
     onOnboardingComplete: () -> Unit,
@@ -70,22 +90,22 @@ fun MainApp(
 ) {
     var showOnboarding by remember { mutableStateOf(!isOnboardingCompleted) }
     var showFirstAssessment by remember { mutableStateOf(!isFirstAssessmentCompleted && isOnboardingCompleted) }
+    var showHistory by remember { mutableStateOf(false) }
 
     when {
-        // КРОК 1: Показати Onboarding якщо не завершено
         showOnboarding -> {
             OnboardingScreen(
                 onFinish = {
                     onOnboardingComplete()
                     showOnboarding = false
-                    showFirstAssessment = true // Після onboarding → assessment
+                    showFirstAssessment = true
                 }
             )
         }
 
-        // КРОК 2: Показати перший Assessment одразу після Onboarding
         showFirstAssessment -> {
             FirstAssessmentFlow(
+                userId = userId,
                 onComplete = {
                     onFirstAssessmentComplete()
                     showFirstAssessment = false
@@ -93,16 +113,26 @@ fun MainApp(
             )
         }
 
-        // КРОК 3: Показати звичайний ChatScreen
+        showHistory -> {
+            AssessmentHistoryScreen(
+                userId = userId,
+                onBack = { showHistory = false },
+                onViewResult = { /* TODO */ }
+            )
+        }
+
         else -> {
-            ChatScreen()
+            ChatScreen(
+                userId = userId,
+                onOpenHistory = { showHistory = true }
+            )
         }
     }
 }
 
-// НОВИЙ: Обгортка для першого Assessment без діалогу вибору
 @Composable
 fun FirstAssessmentFlow(
+    userId: String,
     onComplete: () -> Unit
 ) {
     val geminiRepo = remember { GeminiRepository() }
@@ -120,20 +150,15 @@ fun FirstAssessmentFlow(
     }
 
     if (showResultsScreen && assessmentResult != null) {
-        // Показати результати
         AssessmentResultsScreen(
             result = assessmentResult!!,
-            onBackToChat = {
-                onComplete() // Завершити first assessment flow
-            },
+            onBackToChat = { onComplete() },
             onRetakeAssessment = {
-                // Перепройти assessment
                 showResultsScreen = false
                 assessmentResult = null
             }
         )
     } else if (isProcessing) {
-        // Показати loading під час обробки
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center
@@ -148,49 +173,53 @@ fun FirstAssessmentFlow(
             }
         }
     } else {
-        // Показати Assessment екран (ЗАВЖДИ повна версія - 15 питань)
+        // ВИКЛИК ФУНКЦІЇ З AssessmentScreen.kt
         AssessmentScreenUI(
-            assessmentType = "Повну", // ЗАВЖДИ повна версія
+            assessmentType = "Повну",
             geminiRepo = geminiRepo,
-            onComplete = { answers ->
+            onComplete = { answersMap ->
                 scope.launch {
                     isProcessing = true
 
                     try {
                         val questions = geminiRepo.generateAssessmentQuestions("Повну")
-                        val gapAnalysis = geminiRepo.analyzeCareerGap(answers, questions)
-
+                        val gapAnalysis = geminiRepo.analyzeCareerGap(answersMap, questions)
                         supabaseRepo.saveMessage(conversationId, "assistant", gapAnalysis)
 
-                        val actionPlan = geminiRepo.generateActionPlan(answers, questions, gapAnalysis)
+                        val actionPlan = geminiRepo.generateActionPlan(answersMap, questions, gapAnalysis)
                         supabaseRepo.saveMessage(conversationId, "assistant", actionPlan)
 
                         assessmentResult = parseAssessmentResults(gapAnalysis, actionPlan)
 
+                        assessmentResult?.let { result ->
+                            supabaseRepo.saveAssessmentResult(
+                                userId = userId,
+                                matchScore = result.matchScore,
+                                gapAnalysis = gapAnalysis,
+                                actionPlan = actionPlan,
+                                answers = answersMap
+                            )
+                        }
+
                         showResultsScreen = true
 
                     } catch (e: Exception) {
-                        // Якщо помилка - просто завершити flow
                         onComplete()
                     } finally {
                         isProcessing = false
                     }
                 }
             },
-            onCancel = {
-                // Якщо користувач скасував - все одно завершити flow
-                onComplete()
-            }
+            onCancel = { onComplete() }
         )
     }
 }
 
-// ============================================
-// ВСЯ РЕШТА КОДУ БЕЗ ЗМІН
-// ============================================
-
 @Composable
-fun ChatScreen() {
+fun ChatScreen(
+    userId: String,
+    onOpenHistory: () -> Unit
+) {
     val geminiRepo = remember { GeminiRepository() }
     val supabaseRepo = remember { SupabaseRepository() }
     val conversationId = remember { java.util.UUID.randomUUID().toString() }
@@ -205,8 +234,8 @@ fun ChatScreen() {
     var showAssessmentDialog by remember { mutableStateOf(false) }
     var showAssessmentScreen by remember { mutableStateOf(false) }
     var showResultsScreen by remember { mutableStateOf(false) }
-    var assessmentType by remember { mutableStateOf("") }
     var assessmentResult by remember { mutableStateOf<ParsedAssessmentResult?>(null) }
+    var showFabMenu by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -214,9 +243,7 @@ fun ChatScreen() {
     if (showResultsScreen && assessmentResult != null) {
         AssessmentResultsScreen(
             result = assessmentResult!!,
-            onBackToChat = {
-                showResultsScreen = false
-            },
+            onBackToChat = { showResultsScreen = false },
             onRetakeAssessment = {
                 showResultsScreen = false
                 assessmentResult = null
@@ -225,12 +252,13 @@ fun ChatScreen() {
         )
     }
     else if (showAssessmentScreen) {
+        // ВИКЛИК ФУНКЦІЇ З AssessmentScreen.kt
         AssessmentScreenUI(
-            assessmentType = assessmentType,
+            assessmentType = "Повну",
             geminiRepo = geminiRepo,
-            onComplete = { answers ->
+            onComplete = { answersMap ->
                 scope.launch {
-                    val questions = geminiRepo.generateAssessmentQuestions(assessmentType)
+                    val questions = geminiRepo.generateAssessmentQuestions("Повну")
 
                     showAssessmentScreen = false
 
@@ -242,7 +270,7 @@ fun ChatScreen() {
                     isLoading = true
 
                     try {
-                        val gapAnalysis = geminiRepo.analyzeCareerGap(answers, questions)
+                        val gapAnalysis = geminiRepo.analyzeCareerGap(answersMap, questions)
                         messages = messages + ChatMessage("assistant", gapAnalysis)
                         supabaseRepo.saveMessage(conversationId, "assistant", gapAnalysis)
 
@@ -255,11 +283,21 @@ fun ChatScreen() {
 
                         listState.animateScrollToItem(messages.size - 1)
 
-                        val actionPlan = geminiRepo.generateActionPlan(answers, questions, gapAnalysis)
+                        val actionPlan = geminiRepo.generateActionPlan(answersMap, questions, gapAnalysis)
                         messages = messages + ChatMessage("assistant", actionPlan)
                         supabaseRepo.saveMessage(conversationId, "assistant", actionPlan)
 
                         assessmentResult = parseAssessmentResults(gapAnalysis, actionPlan)
+
+                        assessmentResult?.let { result ->
+                            supabaseRepo.saveAssessmentResult(
+                                userId = userId,
+                                matchScore = result.matchScore,
+                                gapAnalysis = gapAnalysis,
+                                actionPlan = actionPlan,
+                                answers = answersMap
+                            )
+                        }
 
                         showResultsScreen = true
 
@@ -365,25 +403,55 @@ fun ChatScreen() {
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(16.dp)
-                    .padding(bottom = 80.dp)
+                    .padding(bottom = 80.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (showFabMenu) {
+                    SmallFloatingActionButton(
+                        onClick = {
+                            showFabMenu = false
+                            onOpenHistory()
+                        },
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("📋", fontSize = 20.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Історія", fontSize = 14.sp)
+                        }
+                    }
+
+                    SmallFloatingActionButton(
+                        onClick = {
+                            showFabMenu = false
+                            showAssessmentScreen = true
+                        },
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("🎤", fontSize = 20.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Нова оцінка", fontSize = 14.sp)
+                        }
+                    }
+                }
+
                 FloatingActionButton(
-                    onClick = { showAssessmentDialog = true }
+                    onClick = { showFabMenu = !showFabMenu }
                 ) {
-                    Text("🎤", fontSize = 24.sp)
+                    Icon(
+                        imageVector = if (showFabMenu) Icons.Default.Close else Icons.Default.Add,
+                        contentDescription = "Меню"
+                    )
                 }
             }
-        }
-
-        if (showAssessmentDialog) {
-            AssessmentDialog(
-                onDismiss = { showAssessmentDialog = false },
-                onStart = { type ->
-                    showAssessmentDialog = false
-                    assessmentType = type
-                    showAssessmentScreen = true
-                }
-            )
         }
     }
 }
@@ -411,55 +479,6 @@ fun MessageBubble(message: ChatMessage) {
             )
         }
     }
-}
-
-@Composable
-fun AssessmentDialog(
-    onDismiss: () -> Unit,
-    onStart: (String) -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Career Assessment") },
-        text = {
-            Column {
-                Text(
-                    text = "AI оцінить ваш кар'єрний профіль та дасть персоналізовані рекомендації",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Button(
-                    onClick = { onStart("Повну") },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Повна оцінка", fontSize = 16.sp)
-                        Text("15 питань • ~10 хвилин", fontSize = 12.sp)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                OutlinedButton(
-                    onClick = { onStart("Швидку") },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Швидка оцінка", fontSize = 16.sp)
-                        Text("5 питань • ~3 хвилини", fontSize = 12.sp)
-                    }
-                }
-            }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Скасувати")
-            }
-        }
-    )
 }
 
 data class ChatMessage(
