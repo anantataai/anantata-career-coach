@@ -17,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -86,13 +88,15 @@ fun AssessmentHistoryScreen(
                     Text(
                         text = "Історія порожня",
                         fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "Пройдіть першу оцінку щоб побачити результати тут",
                         fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
                         modifier = Modifier.padding(horizontal = 32.dp)
                     )
                 }
@@ -223,53 +227,105 @@ fun AssessmentHistoryCard(
     onDiscuss: () -> Unit,
     onDelete: () -> Unit
 ) {
+    // Парсимо відповіді для відображення мети і ЗП
+    val answersMap = parseAnswersFromJson(assessment.answers)
+    val goalAnswer = answersMap["8"] ?: "Кар'єрна мета"
+    val salaryAnswer = answersMap["9"] ?: ""
+
+    // Скорочуємо назву мети для компактності
+    val shortGoal = when {
+        goalAnswer.contains("спеціаліст", ignoreCase = true) -> "Стати спеціалістом"
+        goalAnswer.contains("керівник", ignoreCase = true) -> "Стати керівником"
+        goalAnswer.contains("бізнес", ignoreCase = true) -> "Власний бізнес"
+        goalAnswer.contains("змінити", ignoreCase = true) -> "Змінити сферу"
+        else -> goalAnswer.take(25) + if (goalAnswer.length > 25) "..." else ""
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(16.dp)
         ) {
-            // Іконка календаря
-            Text(
-                text = "📋",
-                fontSize = 24.sp,
-                modifier = Modifier.padding(end = 12.dp)
-            )
-
-            // Дата та Match Score
-            Column(
-                modifier = Modifier.weight(1f)
+            // Верхній рядок: Мета
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = formatDate(assessment.createdAt),
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium
+                    text = "🎯",
+                    fontSize = 24.sp,
+                    modifier = Modifier.padding(end = 12.dp)
                 )
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    // Мета - головний заголовок
+                    Text(
+                        text = shortGoal,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
 
+                    // ЗП
+                    if (salaryAnswer.isNotEmpty()) {
+                        Text(
+                            text = "💰 $salaryAnswer",
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+
+                // Кнопка видалення
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Text("×", fontSize = 20.sp, color = MaterialTheme.colorScheme.error)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Нижній рядок: Дата і Match Score
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Дата
+                Text(
+                    text = formatDate(assessment.createdAt),
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // Match Score з індикатором
                 Row(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Match: ${assessment.matchScore}%",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
+                        text = "Відповідність: ${assessment.matchScore}%",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
 
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
 
-                    // Кольоровий індикатор
                     Box(
                         modifier = Modifier
-                            .size(12.dp)
+                            .size(10.dp)
                             .background(
                                 color = getScoreColor(assessment.matchScore),
                                 shape = CircleShape
@@ -277,83 +333,66 @@ fun AssessmentHistoryCard(
                     )
                 }
             }
-        }
 
-        // Кнопки - Ряд 1: Переглянути та Видалити
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(
-                onClick = onView,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("Переглянути")
-            }
+            Spacer(modifier = Modifier.height(12.dp))
 
-            OutlinedButton(
-                onClick = onDelete,
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error
-                )
-            ) {
-                Text("×", fontSize = 20.sp)
-            }
-        }
-
-        // Кнопки - Ряд 2: Поділитися
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(top = 8.dp)
-        ) {
-            OutlinedButton(
-                onClick = onShare,
+            // Кнопки
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.secondary
-                )
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Share,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("📤 Поділитися")
-            }
-        }
+                // Переглянути
+                Button(
+                    onClick = onView,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    Text("Переглянути", fontSize = 14.sp)
+                }
 
-        // Кнопки - Ряд 3: Обговорити план
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(top = 8.dp, bottom = 16.dp)
-        ) {
+                // Поділитися
+                OutlinedButton(
+                    onClick = onShare,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Обговорити план
             Button(
                 onClick = onDiscuss,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary
-                )
+                ),
+                contentPadding = PaddingValues(vertical = 10.dp)
             ) {
-                Text("💬 Обговорити план")
+                Text("💬 Обговорити план", fontSize = 14.sp)
             }
         }
     }
 }
 
 /**
- * Форматування дати
+ * ВИПРАВЛЕННЯ #34: Форматування дати з конвертацією UTC → Київ
  */
 fun formatDate(isoDate: String): String {
     return try {
+        // Парсимо дату з UTC
         val inputFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
-        val outputFormat = SimpleDateFormat("d MMMM yyyy", Locale("uk", "UA"))
+        inputFormat.timeZone = TimeZone.getTimeZone("UTC")
+
+        // Форматуємо для відображення в часовому поясі Києва
+        val outputFormat = SimpleDateFormat("d MMMM yyyy, HH:mm", Locale("uk", "UA"))
+        outputFormat.timeZone = TimeZone.getTimeZone("Europe/Kyiv")
+
         val date = inputFormat.parse(isoDate)
         outputFormat.format(date ?: Date())
     } catch (e: Exception) {

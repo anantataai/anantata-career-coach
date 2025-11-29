@@ -82,18 +82,16 @@ fun OnboardingScreen(
             modifier = Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Skip button
-            AnimatedVisibility(
-                visible = pagerState.currentPage < pages.size - 1,
-                enter = fadeIn(),
-                exit = fadeOut()
+            // Skip button - фіксована висота для всіх сторінок
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(64.dp)
+                    .padding(16.dp),
+                contentAlignment = Alignment.TopEnd
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.TopEnd
-                ) {
+                // Кнопка видима тільки на перших двох сторінках
+                if (pagerState.currentPage < pages.size - 1) {
                     TextButton(onClick = onFinish) {
                         Text(
                             text = "Пропустити",
@@ -103,8 +101,6 @@ fun OnboardingScreen(
                     }
                 }
             }
-
-            Spacer(modifier = Modifier.height(if (pagerState.currentPage < pages.size - 1) 0.dp else 48.dp))
 
             // Pager
             HorizontalPager(

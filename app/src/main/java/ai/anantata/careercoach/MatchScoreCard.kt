@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -18,8 +19,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -96,7 +100,7 @@ fun MatchScoreCard(score: Int) {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Match Score",
+                    text = "Рівень відповідності",
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -173,6 +177,39 @@ fun MatchScoreCard(score: Int) {
     }
 }
 
+/**
+ * Виділяє заголовок жирним (текст до двокрапки або тире)
+ */
+@Composable
+fun FormattedStrengthText(text: String, textColor: Color) {
+    // Шукаємо розділювач (двокрапка або тире)
+    val separatorIndex = text.indexOfFirst { it == ':' || it == '–' || it == '-' }
+
+    if (separatorIndex > 0 && separatorIndex < text.length - 1) {
+        val title = text.substring(0, separatorIndex + 1)
+        val description = text.substring(separatorIndex + 1).trim()
+
+        Text(
+            text = buildAnnotatedString {
+                withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) {
+                    append(title)
+                }
+                append(" $description")
+            },
+            fontSize = 15.sp,
+            color = textColor,
+            lineHeight = 22.sp
+        )
+    } else {
+        Text(
+            text = text,
+            fontSize = 15.sp,
+            color = textColor,
+            lineHeight = 22.sp
+        )
+    }
+}
+
 @Composable
 fun StrengthsCard(strengths: List<String>) {
     if (strengths.isEmpty()) return
@@ -192,73 +229,78 @@ fun StrengthsCard(strengths: List<String>) {
             containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    brush = Brush.horizontalGradient(
-                        colors = listOf(
-                            greenColor.copy(alpha = 0.1f),
-                            greenColor.copy(alpha = 0.02f)
+        // ВИПРАВЛЕННЯ #22: SelectionContainer для копіювання тексту
+        SelectionContainer {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(
+                                greenColor.copy(alpha = 0.1f),
+                                greenColor.copy(alpha = 0.02f)
+                            )
                         )
                     )
-                )
-                .padding(20.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(20.dp)
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = greenColor.copy(alpha = 0.2f),
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                        Text("💪", fontSize = 20.sp)
-                    }
-                }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Text(
-                    text = "Ваші сильні сторони",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = greenColor
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            strengths.forEachIndexed { index, strength ->
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Surface(
                         shape = CircleShape,
-                        color = greenColor,
-                        modifier = Modifier.size(24.dp)
+                        color = greenColor.copy(alpha = 0.2f),
+                        modifier = Modifier.size(40.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                            Text(
-                                text = "✓",
-                                color = Color.White,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Text("💪", fontSize = 20.sp)
                         }
                     }
 
                     Spacer(modifier = Modifier.width(12.dp))
 
                     Text(
-                        text = strength,
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onSurface
+                        text = "Ваші сильні сторони",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = greenColor
                     )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                strengths.forEachIndexed { index, strength ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = greenColor,
+                            modifier = Modifier
+                                .size(24.dp)
+                                .padding(top = 2.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Text(
+                                    text = "✓",
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        // ВИПРАВЛЕННЯ #21: Жирний заголовок
+                        FormattedStrengthText(
+                            text = strength,
+                            textColor = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
         }
@@ -284,73 +326,78 @@ fun GapsCard(gaps: List<String>) {
             containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    brush = Brush.horizontalGradient(
-                        colors = listOf(
-                            orangeColor.copy(alpha = 0.1f),
-                            orangeColor.copy(alpha = 0.02f)
+        // ВИПРАВЛЕННЯ #22: SelectionContainer для копіювання тексту
+        SelectionContainer {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(
+                                orangeColor.copy(alpha = 0.1f),
+                                orangeColor.copy(alpha = 0.02f)
+                            )
                         )
                     )
-                )
-                .padding(20.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(20.dp)
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = orangeColor.copy(alpha = 0.2f),
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                        Text("📈", fontSize = 20.sp)
-                    }
-                }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Text(
-                    text = "Що потрібно розвинути",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = orangeColor
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            gaps.forEachIndexed { index, gap ->
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Surface(
                         shape = CircleShape,
-                        color = orangeColor,
-                        modifier = Modifier.size(24.dp)
+                        color = orangeColor.copy(alpha = 0.2f),
+                        modifier = Modifier.size(40.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                            Text(
-                                text = "→",
-                                color = Color.White,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Text("📈", fontSize = 20.sp)
                         }
                     }
 
                     Spacer(modifier = Modifier.width(12.dp))
 
                     Text(
-                        text = gap,
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onSurface
+                        text = "Що потрібно розвинути",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = orangeColor
                     )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                gaps.forEachIndexed { index, gap ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = orangeColor,
+                            modifier = Modifier
+                                .size(24.dp)
+                                .padding(top = 2.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                                Text(
+                                    text = "→",
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        // ВИПРАВЛЕННЯ #21: Жирний заголовок
+                        FormattedStrengthText(
+                            text = gap,
+                            textColor = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
         }
@@ -480,101 +527,107 @@ fun ActionStepCard(
             containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            // Номер кроку в кружку
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(44.dp)
+        // ВИПРАВЛЕННЯ #22: SelectionContainer для копіювання тексту
+        SelectionContainer {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
             ) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.fillMaxSize()
+                // Номер кроку в кружку
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(44.dp)
                 ) {
-                    Text(
-                        text = "$number",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.width(14.dp))
-
-            Column(
-                modifier = Modifier.weight(1f)
-            ) {
-                // Заголовок і пріоритет
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = title,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f),
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = priorityColor.copy(alpha = 0.15f)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = priorityEmoji,
-                                fontSize = 10.sp
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = priority,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = priorityColor
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // Час
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize()
                     ) {
                         Text(
-                            text = "⏰ $timeEstimate",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            text = "$number",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimary
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.width(14.dp))
 
-                // Опис
-                Text(
-                    text = description,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    // Заголовок і пріоритет
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Text(
+                            text = title,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            lineHeight = 22.sp
+                        )
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = priorityColor.copy(alpha = 0.15f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = priorityEmoji,
+                                    fontSize = 10.sp
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = priority,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = priorityColor
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Час
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = "⏰ $timeEstimate",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // ВИПРАВЛЕННЯ #19: Опис без обрізання
+                    Text(
+                        text = description,
+                        fontSize = 14.sp,
+                        lineHeight = 22.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

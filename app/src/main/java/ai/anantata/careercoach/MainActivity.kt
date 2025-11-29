@@ -1,6 +1,8 @@
 package ai.anantata.careercoach
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -17,6 +19,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -135,6 +138,9 @@ fun MainApp(
     // Стан для переходу в чат з контекстом плану
     var chatWithPlanContext by remember { mutableStateOf<AssessmentHistoryItem?>(null) }
 
+    // ВИПРАВЛЕННЯ #18: Стан для запуску нової оцінки з історії/результатів
+    var triggerNewAssessment by remember { mutableStateOf(false) }
+
     when {
         showOnboarding -> {
             OnboardingScreen(
@@ -176,8 +182,10 @@ fun MainApp(
                     showHistory = true
                 },
                 onRetakeAssessment = {
+                    // ВИПРАВЛЕННЯ #18: Запускаємо нову оцінку
                     viewingHistoryItem = null
                     showHistory = false
+                    triggerNewAssessment = true
                 },
                 onDiscussPlan = {
                     // Перехід в чат з контекстом цього плану
@@ -208,7 +216,10 @@ fun MainApp(
                 userId = userId,
                 onOpenHistory = { showHistory = true },
                 initialPlanContext = chatWithPlanContext,
-                onPlanContextConsumed = { chatWithPlanContext = null }
+                onPlanContextConsumed = { chatWithPlanContext = null },
+                // ВИПРАВЛЕННЯ #18: Передаємо тригер для запуску оцінки
+                triggerAssessment = triggerNewAssessment,
+                onAssessmentTriggered = { triggerNewAssessment = false }
             )
         }
     }
@@ -321,11 +332,17 @@ fun ChatScreen(
     userId: String,
     onOpenHistory: () -> Unit,
     initialPlanContext: AssessmentHistoryItem? = null,
-    onPlanContextConsumed: () -> Unit = {}
+    onPlanContextConsumed: () -> Unit = {},
+    // ВИПРАВЛЕННЯ #18: Нові параметри для запуску оцінки ззовні
+    triggerAssessment: Boolean = false,
+    onAssessmentTriggered: () -> Unit = {}
 ) {
     val geminiRepo = remember { GeminiRepository() }
     val supabaseRepo = remember { SupabaseRepository() }
     val conversationId = remember { java.util.UUID.randomUUID().toString() }
+
+    // ВИПРАВЛЕННЯ #33: Контекст для відкриття Google Play
+    val context = LocalContext.current
 
     var messages by remember { mutableStateOf(listOf<ChatMessage>()) }
     var inputText by remember { mutableStateOf("") }
@@ -355,6 +372,14 @@ fun ChatScreen(
         isLoadingHistory = false
     }
 
+    // ВИПРАВЛЕННЯ #18: Обробляємо тригер для запуску оцінки ззовні
+    LaunchedEffect(triggerAssessment) {
+        if (triggerAssessment) {
+            showAssessmentScreen = true
+            onAssessmentTriggered()
+        }
+    }
+
     // Обробляємо контекст плану якщо переходимо з історії/результатів
     LaunchedEffect(initialPlanContext) {
         if (initialPlanContext != null) {
@@ -373,6 +398,13 @@ fun ChatScreen(
         }
     }
 
+    // ВИПРАВЛЕННЯ #5: Закриваємо FAB меню коли починається аналіз
+    LaunchedEffect(isLoading) {
+        if (isLoading) {
+            showFabMenu = false
+        }
+    }
+
     if (showResultsScreen && assessmentResult != null) {
         AssessmentResultsScreen(
             result = assessmentResult!!,
@@ -381,9 +413,11 @@ fun ChatScreen(
             salaryAnswer = savedAnswers[9] ?: "",
             onBackToChat = { showResultsScreen = false },
             onRetakeAssessment = {
+                // ВИПРАВЛЕННЯ #20: Запускаємо нову оцінку
                 showResultsScreen = false
                 assessmentResult = null
                 savedAnswers = emptyMap()
+                showAssessmentScreen = true
             },
             onDiscussPlan = {
                 showResultsScreen = false
@@ -467,7 +501,8 @@ fun ChatScreen(
             },
             onCancel = {
                 showAssessmentScreen = false
-                messages = messages + ChatMessage("assistant", "Оцінку скасовано.")
+                // ВИПРАВЛЕННЯ #6: Не показувати повідомлення "Оцінку скасовано"
+                // messages = messages + ChatMessage("assistant", "Оцінку скасовано.")
             }
         )
     }
@@ -575,6 +610,7 @@ fun ChatScreen(
                 }
             }
 
+            // FAB меню з виправленнями #5, #16 і #33
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -583,7 +619,40 @@ fun ChatScreen(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                if (showFabMenu) {
+                // ВИПРАВЛЕННЯ #5: Показуємо меню тільки якщо НЕ йде аналіз
+                if (showFabMenu && !isLoading) {
+                    // ВИПРАВЛЕННЯ #33: Кнопка "Відгук" (найнижча)
+                    SmallFloatingActionButton(
+                        onClick = {
+                            showFabMenu = false
+                            // Відкриваємо Google Play
+                            val intent = Intent(Intent.ACTION_VIEW).apply {
+                                data = Uri.parse("https://play.google.com/store/apps/details?id=ai.anantata.careercoach")
+                                setPackage("com.android.vending")
+                            }
+                            try {
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                // Якщо Google Play не встановлено — відкриваємо в браузері
+                                val browserIntent = Intent(Intent.ACTION_VIEW).apply {
+                                    data = Uri.parse("https://play.google.com/store/apps/details?id=ai.anantata.careercoach")
+                                }
+                                context.startActivity(browserIntent)
+                            }
+                        },
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("⭐", fontSize = 20.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Відгук", fontSize = 14.sp)
+                        }
+                    }
+
+                    // Історія (середня)
                     SmallFloatingActionButton(
                         onClick = {
                             showFabMenu = false
@@ -601,6 +670,7 @@ fun ChatScreen(
                         }
                     }
 
+                    // ВИПРАВЛЕННЯ #16: Нова оцінка (найвища — зверху)
                     SmallFloatingActionButton(
                         onClick = {
                             showFabMenu = false
@@ -612,19 +682,36 @@ fun ChatScreen(
                             modifier = Modifier.padding(horizontal = 16.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("🎯", fontSize = 20.sp)  // Нова іконка!
+                            Text("🎯", fontSize = 20.sp)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Нова оцінка", fontSize = 14.sp)
                         }
                     }
                 }
 
+                // ВИПРАВЛЕННЯ #5: Блокуємо FAB кнопку під час аналізу
                 FloatingActionButton(
-                    onClick = { showFabMenu = !showFabMenu }
+                    onClick = {
+                        if (!isLoading) {
+                            showFabMenu = !showFabMenu
+                        }
+                    },
+                    // Візуально показуємо що кнопка заблокована
+                    containerColor = if (isLoading) {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.primaryContainer
+                    }
                 ) {
                     Icon(
                         imageVector = if (showFabMenu) Icons.Default.Close else Icons.Default.Add,
-                        contentDescription = "Меню"
+                        contentDescription = "Меню",
+                        // Змінюємо колір іконки коли заблоковано
+                        tint = if (isLoading) {
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        } else {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        }
                     )
                 }
             }
@@ -744,7 +831,8 @@ fun MessageBubble(message: ChatMessage) {
             color = if (message.role == "user")
                 MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.secondaryContainer,
-            modifier = Modifier.widthIn(max = 280.dp)
+            // ВИПРАВЛЕННЯ #17: Ширше поле повідомлення (було 280.dp)
+            modifier = Modifier.widthIn(max = 320.dp)
         ) {
             Text(
                 text = message.content,

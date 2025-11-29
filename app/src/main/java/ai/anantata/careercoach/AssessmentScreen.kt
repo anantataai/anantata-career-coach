@@ -39,6 +39,7 @@ fun AssessmentScreenUI(
     var showCustomInput by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
+    val scrollState = rememberScrollState()
 
     LaunchedEffect(Unit) {
         scope.launch {
@@ -52,6 +53,15 @@ fun AssessmentScreenUI(
     LaunchedEffect(currentQuestionIndex) {
         showCustomInput = false
         customInput = ""
+    }
+
+    // ВИПРАВЛЕННЯ #13: Автоскрол до поля "Ваш варіант"
+    LaunchedEffect(showCustomInput) {
+        if (showCustomInput) {
+            // Невелика затримка щоб UI встиг відмалюватись
+            kotlinx.coroutines.delay(100)
+            scrollState.animateScrollTo(scrollState.maxValue)
+        }
     }
 
     if (isLoading) {
@@ -144,7 +154,7 @@ fun AssessmentScreenUI(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scrollState)
                     .padding(20.dp)
             ) {
                 // Номер питання
@@ -189,8 +199,11 @@ fun AssessmentScreenUI(
                             isCustomOption = isCustomOption,
                             onClick = {
                                 if (isCustomOption) {
-                                    showCustomInput = true
-                                    customInput = if (isCustomAnswer) currentAnswer ?: "" else ""
+                                    // ВИПРАВЛЕННЯ #14: Не скидати текст якщо поле вже відкрите
+                                    if (!showCustomInput) {
+                                        showCustomInput = true
+                                        customInput = if (isCustomAnswer) currentAnswer ?: "" else ""
+                                    }
                                 } else {
                                     showCustomInput = false
                                     customInput = ""
@@ -283,7 +296,10 @@ fun AssessmentScreenUI(
                                     OutlinedButton(
                                         onClick = {
                                             showCustomInput = false
-                                            customInput = ""
+                                            // ВИПРАВЛЕННЯ #14: Якщо є збережена відповідь - не очищати
+                                            if (!isCustomAnswer) {
+                                                customInput = ""
+                                            }
                                         },
                                         modifier = Modifier.weight(1f),
                                         shape = RoundedCornerShape(12.dp)
@@ -313,6 +329,9 @@ fun AssessmentScreenUI(
                                 }
                             }
                         }
+
+                        // ВИПРАВЛЕННЯ #13: Додатковий простір щоб поле не було впритул до кнопок
+                        Spacer(modifier = Modifier.height(80.dp))
                     }
                 } else {
                     // Звичайні питання з вибором
