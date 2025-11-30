@@ -5,6 +5,40 @@ import com.google.ai.client.generativeai.GenerativeModel
 import com.google.ai.client.generativeai.type.generationConfig
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import org.json.JSONObject
+import org.json.JSONArray
+
+// ═══════════════════════════════════════════════════════════════
+// DATA CLASSES для v1.5
+// ═══════════════════════════════════════════════════════════════
+
+data class GeneratedGoal(
+    val title: String,
+    val targetSalary: String
+)
+
+data class GeneratedStrategicStep(
+    val number: Int,
+    val title: String,
+    val description: String,
+    val timeframe: String
+)
+
+data class GeneratedWeeklyTask(
+    val number: Int,
+    val title: String,
+    val description: String
+)
+
+data class GeneratedPlan(
+    val goal: GeneratedGoal,
+    val matchScore: Int,
+    val gapAnalysis: String,
+    val strategicSteps: List<GeneratedStrategicStep>,
+    val weeklyTasks: List<GeneratedWeeklyTask>
+)
+
+// ═══════════════════════════════════════════════════════════════
 
 class GeminiRepository {
 
@@ -24,19 +58,429 @@ class GeminiRepository {
         modelName = "gemini-2.5-flash",
         apiKey = BuildConfig.GEMINI_API_KEY,
         generationConfig = generationConfig {
-            temperature = 0.3f  // ЗМІНЕНО: нижча температура для точніших розрахунків
+            temperature = 0.3f
             topK = 40
             topP = 0.95f
             maxOutputTokens = 8192
         }
     )
 
-    fun sendMessage(message: String): Flow<String> = flow {
-        val response = chatModel.generateContentStream(message)
+    // ═══════════════════════════════════════════════════════════════
+    // ЧАТОВА ФУНКЦІЯ з КОНТЕКСТОМ (для #35)
+    // ═══════════════════════════════════════════════════════════════
+
+    fun sendMessageWithContext(
+        message: String,
+        context: String? = null
+    ): Flow<String> = flow {
+        val fullPrompt = if (context != null) {
+            """
+$context
+
+═══════════════════════════════════════════════════════════════
+ПОВІДОМЛЕННЯ КОРИСТУВАЧА:
+$message
+═══════════════════════════════════════════════════════════════
+
+Відповідай як професійний кар'єрний коуч, враховуючи контекст вище.
+Якщо користувач питає про "крок 1", "завдання 2" тощо — це з його плану вище.
+Будь конкретним і практичним.
+""".trimIndent()
+        } else {
+            message
+        }
+
+        val response = chatModel.generateContentStream(fullPrompt)
         response.collect { chunk ->
             emit(chunk.text ?: "")
         }
     }
+
+    // Стара функція для сумісності
+    fun sendMessage(message: String): Flow<String> = sendMessageWithContext(message, null)
+
+    // ═══════════════════════════════════════════════════════════════
+    // ГЕНЕРАЦІЯ КОНТЕКСТУ ДЛЯ ШІ (для #35)
+    // ═══════════════════════════════════════════════════════════════
+
+    fun buildAIContext(
+        goalTitle: String,
+        targetSalary: String,
+        strategicSteps: List<StrategicStepItem>,
+        weeklyTasks: List<WeeklyTaskItem>,
+        currentWeek: Int,
+        chatHistory: List<ChatMessageItem> = emptyList()
+    ): String {
+        val stepsText = strategicSteps.joinToString("\n") { step ->
+            val statusIcon = when (step.status) {
+                "done" -> "✅"
+                "in_progress" -> "🔄"
+                else -> "⏳"
+            }
+            "$statusIcon Крок ${step.stepNumber}: ${step.title}"
+        }
+
+        val tasksText = weeklyTasks.joinToString("\n") { task ->
+            val statusIcon = when (task.status) {
+                "done" -> "✅"
+                "skipped" -> "⏭️"
+                else -> "🔲"
+            }
+            "$statusIcon ${task.taskNumber}. ${task.title}"
+        }
+
+        val doneCount = weeklyTasks.count { it.status == "done" }
+        val skippedCount = weeklyTasks.count { it.status == "skipped" }
+
+        val historyText = if (chatHistory.isNotEmpty()) {
+            val lastMessages = chatHistory.takeLast(10)
+            lastMessages.joinToString("\n") { msg ->
+                val role = if (msg.role == "user") "Користувач" else "Коуч"
+                "$role: ${msg.content.take(200)}${if (msg.content.length > 200) "..." else ""}"
+            }
+        } else {
+            "Немає попередніх повідомлень"
+        }
+
+        return """
+═══════════════════════════════════════════════════════════════
+КОНТЕКСТ КОРИСТУВАЧА (ТИ - КАРЕЄРНИЙ КОУЧ)
+═══════════════════════════════════════════════════════════════
+
+🎯 ГОЛОВНА ЦІЛЬ: $goalTitle
+💰 Бажаний дохід: $targetSalary
+
+📋 СТРАТЕГІЧНИЙ ПЛАН (10 кроків на 3-12 місяців):
+$stepsText
+
+📅 ТИЖДЕНЬ $currentWeek — ПОТОЧНІ ЗАВДАННЯ:
+$tasksText
+
+📊 Прогрес тижня: $doneCount/10 виконано, $skippedCount пропущено
+
+💬 ІСТОРІЯ ЧАТУ:
+$historyText
+
+═══════════════════════════════════════════════════════════════
+""".trimIndent()
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ГОЛОВНА ФУНКЦІЯ v1.5: ГЕНЕРАЦІЯ ЦІЛІ + ПЛАНУ + ЗАВДАНЬ
+    // ═══════════════════════════════════════════════════════════════
+
+    suspend fun generateGoalWithPlan(
+        answers: Map<Int, String>,
+        questions: List<AssessmentQuestion>
+    ): GeneratedPlan {
+        val answersText = buildString {
+            questions.forEach { question ->
+                val answer = answers[question.id] ?: "Немає відповіді"
+                appendLine("${question.text}")
+                appendLine("Відповідь: $answer")
+                appendLine()
+            }
+        }
+
+        // Витягуємо ключові відповіді
+        val currentSalary = answers[5] ?: ""
+        val desiredSalary = answers[9] ?: ""
+        val currentPosition = answers[3] ?: ""
+        val desiredPosition = answers[8] ?: ""
+        val experience = answers[4] ?: ""
+        val barrier = answers[11] ?: ""
+        val education = answers[2] ?: ""
+        val skills = answers[6] ?: ""
+        val achievements = answers[7] ?: ""
+        val certificates = answers[13] ?: ""
+        val motivation = answers[15] ?: ""
+        val workPreference = answers[12] ?: ""
+
+        val prompt = """
+Ти - професійний career counselor з 20+ роками досвіду. 
+Проаналізуй відповіді та створи ПОВНИЙ ПЛАН для користувача.
+
+ВІДПОВІДІ КАНДИДАТА:
+$answersText
+
+═══════════════════════════════════════════════════════════════
+ЗАВДАННЯ: Згенеруй JSON з такою структурою
+═══════════════════════════════════════════════════════════════
+
+{
+  "goal": {
+    "title": "[Коротка назва цілі на основі відповіді 8, наприклад: 'Відкрити власний бізнес' або 'Стати IT спеціалістом']",
+    "target_salary": "[Бажана зарплата з відповіді 9]"
+  },
+  "match_score": [число від 0 до 100 — розрахуй чесно],
+  "gap_analysis": "[Короткий текст 3-5 речень: поточний стан, що треба розвинути, скільки часу до мети]",
+  "strategic_steps": [
+    {
+      "number": 1,
+      "title": "[Назва кроку - до 5 слів]",
+      "description": "[Опис 1-2 речення]",
+      "timeframe": "Місяць 1-2"
+    },
+    {
+      "number": 2,
+      "title": "[Назва]",
+      "description": "[Опис]",
+      "timeframe": "Місяць 1-2"
+    },
+    ... всього РІВНО 10 кроків
+  ],
+  "weekly_tasks": [
+    {
+      "number": 1,
+      "title": "[Конкретне завдання на 1-2 години]",
+      "description": "[Що саме зробити]"
+    },
+    {
+      "number": 2,
+      "title": "[Завдання]",
+      "description": "[Опис]"
+    },
+    ... всього РІВНО 10 завдань
+  ]
+}
+
+═══════════════════════════════════════════════════════════════
+ПРАВИЛА ГЕНЕРАЦІЇ:
+═══════════════════════════════════════════════════════════════
+
+MATCH SCORE — розрахуй за формулою:
+1. Позиційний gap (0-20): "$currentPosition" → "$desiredPosition"
+2. Досвід (0-20): "$experience"
+3. Освіта (0-20): "$education" + "$certificates"
+4. Навички (0-20): "$skills" + "$achievements"
+5. Фінансовий gap (0-20): "$currentSalary" → "$desiredSalary"
+
+СТРАТЕГІЧНІ КРОКИ (10 шт.):
+- Напрямок на 3-12 місяців
+- Від простого до складного
+- Перші 2-3 кроки — подолання бар'єру "$barrier"
+- Timeframe: "Місяць 1-2", "Місяць 3-4", "Місяць 5-6" тощо
+- Враховуй мотивацію: "$motivation"
+
+ТИЖНЕВІ ЗАВДАННЯ (10 шт.):
+- КОНКРЕТНІ дії на ПЕРШИЙ ТИЖДЕНЬ
+- Кожне завдання можна виконати за 1-3 години
+- Реалістичні для України
+- Включай конкретні ресурси (назви курсів, сайтів)
+- Приклади: "Зареєструватись на Coursera", "Переглянути 3 відео про...", "Записати 5 ідей..."
+
+ВАЖЛИВО:
+- Відповідай ТІЛЬКИ валідним JSON
+- БЕЗ markdown, БЕЗ пояснень, БЕЗ тексту до/після JSON
+- РІВНО 10 strategic_steps
+- РІВНО 10 weekly_tasks
+""".trimIndent()
+
+        return try {
+            val response = assessmentModel.generateContent(prompt)
+            val jsonText = response.text?.trim() ?: throw Exception("Порожня відповідь")
+
+            // Очищаємо від можливих markdown блоків
+            val cleanJson = jsonText
+                .removePrefix("```json")
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
+
+            parseGeneratedPlan(cleanJson)
+        } catch (e: Exception) {
+            // Fallback — повертаємо базовий план
+            createFallbackPlan(answers)
+        }
+    }
+
+    private fun parseGeneratedPlan(jsonText: String): GeneratedPlan {
+        val json = JSONObject(jsonText)
+
+        // Парсимо goal
+        val goalJson = json.getJSONObject("goal")
+        val goal = GeneratedGoal(
+            title = goalJson.getString("title"),
+            targetSalary = goalJson.getString("target_salary")
+        )
+
+        // Парсимо match_score
+        val matchScore = json.getInt("match_score")
+
+        // Парсимо gap_analysis
+        val gapAnalysis = json.getString("gap_analysis")
+
+        // Парсимо strategic_steps
+        val stepsArray = json.getJSONArray("strategic_steps")
+        val strategicSteps = mutableListOf<GeneratedStrategicStep>()
+        for (i in 0 until stepsArray.length()) {
+            val stepJson = stepsArray.getJSONObject(i)
+            strategicSteps.add(GeneratedStrategicStep(
+                number = stepJson.getInt("number"),
+                title = stepJson.getString("title"),
+                description = stepJson.getString("description"),
+                timeframe = stepJson.getString("timeframe")
+            ))
+        }
+
+        // Парсимо weekly_tasks
+        val tasksArray = json.getJSONArray("weekly_tasks")
+        val weeklyTasks = mutableListOf<GeneratedWeeklyTask>()
+        for (i in 0 until tasksArray.length()) {
+            val taskJson = tasksArray.getJSONObject(i)
+            weeklyTasks.add(GeneratedWeeklyTask(
+                number = taskJson.getInt("number"),
+                title = taskJson.getString("title"),
+                description = taskJson.getString("description")
+            ))
+        }
+
+        return GeneratedPlan(
+            goal = goal,
+            matchScore = matchScore,
+            gapAnalysis = gapAnalysis,
+            strategicSteps = strategicSteps,
+            weeklyTasks = weeklyTasks
+        )
+    }
+
+    private fun createFallbackPlan(answers: Map<Int, String>): GeneratedPlan {
+        val desiredPosition = answers[8] ?: "Досягти кар'єрної мети"
+        val desiredSalary = answers[9] ?: "Збільшити дохід"
+
+        return GeneratedPlan(
+            goal = GeneratedGoal(
+                title = desiredPosition,
+                targetSalary = desiredSalary
+            ),
+            matchScore = 50,
+            gapAnalysis = "Не вдалось проаналізувати профіль автоматично. Рекомендуємо пройти оцінку ще раз.",
+            strategicSteps = (1..10).map { i ->
+                GeneratedStrategicStep(
+                    number = i,
+                    title = "Крок $i",
+                    description = "Опис кроку $i",
+                    timeframe = "Місяць ${(i + 1) / 2}-${(i + 2) / 2}"
+                )
+            },
+            weeklyTasks = (1..10).map { i ->
+                GeneratedWeeklyTask(
+                    number = i,
+                    title = "Завдання $i",
+                    description = "Опис завдання $i"
+                )
+            }
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ГЕНЕРАЦІЯ НАСТУПНОГО ТИЖНЯ
+    // ═══════════════════════════════════════════════════════════════
+
+    suspend fun generateNextWeekTasks(
+        goalTitle: String,
+        targetSalary: String,
+        strategicSteps: List<StrategicStepItem>,
+        completedTasks: List<WeeklyTaskItem>,
+        skippedTasks: List<WeeklyTaskItem>,
+        currentWeek: Int
+    ): List<GeneratedWeeklyTask> {
+
+        val stepsText = strategicSteps.joinToString("\n") { step ->
+            val statusIcon = when (step.status) {
+                "done" -> "✅"
+                "in_progress" -> "🔄"
+                else -> "⏳"
+            }
+            "$statusIcon Крок ${step.stepNumber}: ${step.title} (${step.timeframe})"
+        }
+
+        val completedText = completedTasks.joinToString("\n") { "✅ ${it.title}" }
+        val skippedText = skippedTasks.joinToString("\n") { "⏭️ ${it.title}" }
+
+        val prompt = """
+Ти - професійний career counselor.
+
+КОНТЕКСТ КОРИСТУВАЧА:
+🎯 Ціль: $goalTitle
+💰 Бажаний дохід: $targetSalary
+
+СТРАТЕГІЧНІ КРОКИ:
+$stepsText
+
+ТИЖДЕНЬ ${currentWeek - 1} — РЕЗУЛЬТАТИ:
+Виконано (${completedTasks.size}/10):
+$completedText
+
+Пропущено (${skippedTasks.size}/10):
+$skippedText
+
+═══════════════════════════════════════════════════════════════
+ЗАВДАННЯ: Згенеруй 10 завдань на ТИЖДЕНЬ $currentWeek
+═══════════════════════════════════════════════════════════════
+
+Формат — ТІЛЬКИ валідний JSON масив:
+[
+  {
+    "number": 1,
+    "title": "[Конкретне завдання]",
+    "description": "[Що саме зробити]"
+  },
+  ... всього РІВНО 10 завдань
+]
+
+ПРАВИЛА:
+- Враховуй що користувач пропустив деякі завдання — можливо повторити важливі
+- Завдання мають бути СКЛАДНІШИМИ ніж минулого тижня
+- Продовжуй прогрес по стратегічних кроках
+- Кожне завдання на 1-3 години
+- Конкретні ресурси та дії
+
+ВІДПОВІДАЙ ТІЛЬКИ JSON МАСИВОМ!
+""".trimIndent()
+
+        return try {
+            val response = assessmentModel.generateContent(prompt)
+            val jsonText = response.text?.trim() ?: throw Exception("Порожня відповідь")
+
+            val cleanJson = jsonText
+                .removePrefix("```json")
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
+
+            parseWeeklyTasks(cleanJson)
+        } catch (e: Exception) {
+            // Fallback
+            (1..10).map { i ->
+                GeneratedWeeklyTask(
+                    number = i,
+                    title = "Завдання $i тижня $currentWeek",
+                    description = "Продовжуйте працювати над своєю метою"
+                )
+            }
+        }
+    }
+
+    private fun parseWeeklyTasks(jsonText: String): List<GeneratedWeeklyTask> {
+        val tasksArray = JSONArray(jsonText)
+        val tasks = mutableListOf<GeneratedWeeklyTask>()
+
+        for (i in 0 until tasksArray.length()) {
+            val taskJson = tasksArray.getJSONObject(i)
+            tasks.add(GeneratedWeeklyTask(
+                number = taskJson.getInt("number"),
+                title = taskJson.getString("title"),
+                description = taskJson.getString("description")
+            ))
+        }
+
+        return tasks
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // СТАРІ ФУНКЦІЇ (для сумісності з поточним кодом)
+    // ═══════════════════════════════════════════════════════════════
 
     suspend fun generateAssessmentQuestions(
         type: String
@@ -150,231 +594,91 @@ class GeminiRepository {
         )
     }
 
+    // Стара функція — залишаємо для сумісності
     suspend fun analyzeCareerGap(
         answers: Map<Int, String>,
         questions: List<AssessmentQuestion>
     ): String {
-        val answersText = buildString {
-            questions.forEach { question ->
-                val answer = answers[question.id] ?: "Немає відповіді"
-                appendLine("${question.text}")
-                appendLine("Відповідь: $answer")
-                appendLine()
-            }
-        }
-
-        // Витягуємо конкретні відповіді для аналізу
-        val currentSalary = answers[5] ?: ""
-        val desiredSalary = answers[9] ?: ""
-        val currentPosition = answers[3] ?: ""
-        val desiredPosition = answers[8] ?: ""
-        val experience = answers[4] ?: ""
-        val barrier = answers[11] ?: ""
-        val education = answers[2] ?: ""
-        val skills = answers[6] ?: ""
-        val achievements = answers[7] ?: ""
-        val certificates = answers[13] ?: ""
-
-        val prompt = """
-Ти - професійний career counselor з 20+ роками досвіду. Проаналізуй відповіді кандидата та створи ПЕРСОНАЛІЗОВАНИЙ Gap Analysis.
-
-ВІДПОВІДІ КАНДИДАТА:
-$answersText
-
-═══════════════════════════════════════════════════════════════
-КРИТИЧНО ВАЖЛИВО: ТОЧНИЙ РОЗРАХУНОК MATCH SCORE
-═══════════════════════════════════════════════════════════════
-
-Розрахуй Match Score за формулою (кожен фактор від 0 до 20 балів):
-
-1. ПОЗИЦІЙНИЙ GAP (0-20 балів):
-   - Поточна: "$currentPosition" → Бажана: "$desiredPosition"
-   - Та сама позиція = 20 балів
-   - Одна ступінь вгору (спеціаліст→керівник) = 14 балів
-   - Дві ступені вгору (студент→керівник) = 8 балів
-   - Кардинальна зміна (будь-що→власний бізнес) = 6 балів
-   - Повна зміна сфери = 4 бали
-
-2. ДОСВІД (0-20 балів):
-   - Досвід: "$experience"
-   - Більше 10 років = 20 балів
-   - 5-10 років = 16 балів
-   - 1-5 років = 12 балів
-   - До 1 року = 6 балів
-
-3. ОСВІТА + СЕРТИФІКАТИ (0-20 балів):
-   - Освіта: "$education", Сертифікати: "$certificates"
-   - Вища + міжнародні сертифікати = 20 балів
-   - Вища + курси = 16 балів
-   - Вища без курсів = 12 балів
-   - Неповна вища + курси = 10 балів
-   - Середня = 6 балів
-
-4. НАВИЧКИ + ДОСЯГНЕННЯ (0-20 балів):
-   - Навички: "$skills", Досягнення: "$achievements"
-   - Релевантні навички + значні досягнення = 20 балів
-   - Релевантні навички + деякі досягнення = 14 балів
-   - Базові навички = 10 балів
-   - Немає досягнень = 6 балів
-
-5. ФІНАНСОВИЙ GAP (0-20 балів):
-   - Поточна ЗП: "$currentSalary" → Бажана: "$desiredSalary"
-   - Різниця до 30% = 20 балів
-   - Різниця 30-50% = 16 балів
-   - Різниця 50-100% = 12 балів
-   - Різниця 100-200% = 8 балів
-   - Різниця більше 200% = 4 бали
-
-ПІДРАХУЙ ТОЧНО:
-Фактор 1: [X] балів (пояснення)
-Фактор 2: [X] балів (пояснення)
-Фактор 3: [X] балів (пояснення)
-Фактор 4: [X] балів (пояснення)
-Фактор 5: [X] балів (пояснення)
-СУМА: [XX] балів з 100 = [XX]%
-
-ВАЖЛИВО: 
-- НЕ округляй до 5 або 10! 
-- Match Score має бути ТОЧНИМ числом (наприклад: 47%, 63%, 71%, 82%)
-- Показуй розрахунок кожного фактору
-
-═══════════════════════════════════════════════════════════════
-
-ФОРМАТ ВІДПОВІДІ:
-
+        // Використовуємо нову функцію і повертаємо тільки gap analysis
+        val plan = generateGoalWithPlan(answers, questions)
+        return """
 📊 CAREER GAP ANALYSIS
 
-🎯 Match Score: [ТОЧНЕ ЧИСЛО]%
+🎯 Match Score: ${plan.matchScore}%
 
-📈 Розрахунок:
-- Позиційний gap: [X]/20 - [пояснення]
-- Досвід: [X]/20 - [пояснення]
-- Освіта: [X]/20 - [пояснення]
-- Навички: [X]/20 - [пояснення]
-- Фінансовий gap: [X]/20 - [пояснення]
-- Разом: [XX]/100 = [XX]%
-
-📍 Поточний рівень: $currentPosition
-🎯 Бажаний рівень: $desiredPosition
+${plan.gapAnalysis}
 
 💪 СИЛЬНІ СТОРОНИ:
-- [сторона 1 - конкретно з відповідей]
-- [сторона 2]
-- [сторона 3]
+- Ваша мотивація та цілеспрямованість
+- Готовність до змін
+- Чітке розуміння мети
 
 📈 ЩО ПОТРІБНО РОЗВИНУТИ:
-- [gap 1 - конкретно на основі бар'єру]
-- [gap 2]
-- [gap 3]
-
-💰 ОЦІНКА ЗАРПЛАТИ: [Реалістична/Амбітна/Дуже амбітна]
-$currentSalary → $desiredSalary
-
-⏰ ЧАС ДО МЕТИ: [конкретний термін]
-
-🚧 ЯК ПОДОЛАТИ ГОЛОВНИЙ БАР'ЄР "$barrier":
-[2-3 конкретні поради]
-
-Будь МАКСИМАЛЬНО точним у розрахунках!
+- Дивіться ваш персональний план дій
 """.trimIndent()
-
-        return try {
-            val response = assessmentModel.generateContent(prompt)
-            response.text ?: "Не вдалось проаналізувати профіль"
-        } catch (e: Exception) {
-            "Помилка аналізу: ${e.message}"
-        }
     }
 
+    // Стара функція — залишаємо для сумісності
     suspend fun generateActionPlan(
         answers: Map<Int, String>,
         questions: List<AssessmentQuestion>,
         gapAnalysis: String
     ): String {
-        val answersText = buildString {
-            questions.forEach { question ->
-                val answer = answers[question.id] ?: "Немає відповіді"
-                appendLine("${question.text}: $answer")
-            }
+        val plan = generateGoalWithPlan(answers, questions)
+
+        val stepsText = plan.strategicSteps.joinToString("\n\n") { step ->
+            """
+📍 КРОК ${step.number}: ${step.title}
+⏰ Час: ${step.timeframe}
+
+${step.description}
+""".trimIndent()
         }
 
-        val barrier = answers[11] ?: "Не вказано"
-        val desiredPosition = answers[8] ?: ""
-        val skills = answers[6] ?: ""
-
-        val prompt = """
-Ти - професійний career counselor. На основі профілю та Gap Analysis створи КОНКРЕТНИЙ план дій з РІВНО 10 КРОКІВ.
-
-ПРОФІЛЬ:
-$answersText
-
-GAP ANALYSIS:
-$gapAnalysis
-
-ГОЛОВНИЙ БАР'ЄР КОРИСТУВАЧА: $barrier
-БАЖАНА ПОЗИЦІЯ: $desiredPosition
-ПОТОЧНІ НАВИЧКИ: $skills
-
-СТВОРИ ДЕТАЛЬНИЙ ACTION PLAN з РІВНО 10 КРОКІВ:
-
-ВАЖЛИВО:
-- Кроки мають бути ПЕРСОНАЛІЗОВАНІ під відповіді користувача
-- Перші 2-3 кроки мають допомогти подолати бар'єр "$barrier"
-- Кожен крок веде до мети "$desiredPosition"
-- Використовуй існуючі навички "$skills"
-- РІВНО 10 кроків (не більше, не менше)
-- Кожен крок СТИСЛИЙ і КОНКРЕТНИЙ
-- Реалістичні терміни для України
-- Конкретні ресурси (назви курсів, платформ, книг)
-
-ФОРМАТ ВІДПОВІДІ (СТРОГО):
-
+        return """
 🎯 ACTION PLAN
 
-━━━━━━━━━━━━━━━━━━━━━━
-
-📍 КРОК 1: [Назва максимум 5 слів]
-⏰ Час: [термін]
-🔥 Пріоритет: [Критично/Високий/Середній]
-
-[Опис - максимум 2-3 речення з КОНКРЕТНИМИ діями]
-💡 Ресурси: [конкретні назви курсів/книг/платформ]
+$stepsText
 
 ━━━━━━━━━━━━━━━━━━━━━━
 
-📍 КРОК 2: [Назва]
-⏰ Час: [термін]
-🔥 Пріоритет: [пріоритет]
-
-[Опис]
-💡 Ресурси: [ресурси]
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-[... продовжуй до кроку 10]
-
-📍 КРОК 10: [Назва]
-⏰ Час: [термін]
-🔥 Пріоритет: [пріоритет]
-
-[Опис]
-💡 Ресурси: [ресурси]
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-🎯 ЗАГАЛЬНИЙ ЧАС ДО МЕТИ: [сума всіх кроків]
-
-БЕЗ ДОДАТКОВОГО ТЕКСТУ! ТІЛЬКИ 10 КРОКІВ!
+🎯 ЗАГАЛЬНИЙ ЧАС ДО МЕТИ: 6-12 місяців
 """.trimIndent()
-
-        return try {
-            val response = assessmentModel.generateContent(prompt)
-            response.text ?: "Не вдалось згенерувати план дій"
-        } catch (e: Exception) {
-            "Помилка генерації плану: ${e.message}\n\nСпробуйте ще раз."
-        }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// ДОПОМІЖНІ DATA CLASSES для роботи з Supabase даними
+// ═══════════════════════════════════════════════════════════════
+
+data class StrategicStepItem(
+    val id: String,
+    val goalId: String,
+    val stepNumber: Int,
+    val title: String,
+    val description: String,
+    val timeframe: String,
+    val status: String // "pending", "in_progress", "done"
+)
+
+data class WeeklyTaskItem(
+    val id: String,
+    val goalId: String,
+    val weekNumber: Int,
+    val taskNumber: Int,
+    val title: String,
+    val description: String,
+    val status: String // "pending", "done", "skipped"
+)
+
+data class ChatMessageItem(
+    val id: String,
+    val userId: String,
+    val goalId: String,
+    val role: String,
+    val content: String,
+    val createdAt: String
+)
 
 data class AssessmentQuestion(
     val id: Int,
