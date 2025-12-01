@@ -9,7 +9,7 @@ import org.json.JSONObject
 import org.json.JSONArray
 
 // ═══════════════════════════════════════════════════════════════
-// DATA CLASSES для v1.5
+// DATA CLASSES для v1.6 (з підтримкою зв'язку кроків і завдань)
 // ═══════════════════════════════════════════════════════════════
 
 data class GeneratedGoal(
@@ -21,13 +21,16 @@ data class GeneratedStrategicStep(
     val number: Int,
     val title: String,
     val description: String,
-    val timeframe: String
+    val timeframe: String,
+    val startWeek: Int,  // NEW: з якого тижня починається
+    val endWeek: Int     // NEW: на якому тижні закінчується
 )
 
 data class GeneratedWeeklyTask(
     val number: Int,
     val title: String,
-    val description: String
+    val description: String,
+    val strategicStepNumber: Int  // NEW: до якого кроку відноситься (1-10)
 )
 
 data class GeneratedPlan(
@@ -117,7 +120,11 @@ $message
                 "in_progress" -> "🔄"
                 else -> "⏳"
             }
-            "$statusIcon Крок ${step.stepNumber}: ${step.title}"
+            val weekRange = if (step.startWeek > 0 && step.endWeek > 0) {
+                " [Тижні ${step.startWeek}-${step.endWeek}]"
+            } else ""
+            val progress = if (step.progressPercent > 0) " (${step.progressPercent}%)" else ""
+            "$statusIcon Крок ${step.stepNumber}: ${step.title}$weekRange$progress"
         }
 
         val tasksText = weeklyTasks.joinToString("\n") { task ->
@@ -166,7 +173,8 @@ $historyText
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // ГОЛОВНА ФУНКЦІЯ v1.5: ГЕНЕРАЦІЯ ЦІЛІ + ПЛАНУ + ЗАВДАНЬ
+    // ГОЛОВНА ФУНКЦІЯ v1.6: ГЕНЕРАЦІЯ ЦІЛІ + ПЛАНУ + ЗАВДАНЬ
+    // з підтримкою зв'язку кроків і завдань
     // ═══════════════════════════════════════════════════════════════
 
     suspend fun generateGoalWithPlan(
@@ -219,13 +227,17 @@ $answersText
       "number": 1,
       "title": "[Назва кроку - до 5 слів]",
       "description": "[Опис 1-2 речення]",
-      "timeframe": "Місяць 1-2"
+      "timeframe": "Місяць 1-2",
+      "start_week": 1,
+      "end_week": 8
     },
     {
       "number": 2,
       "title": "[Назва]",
       "description": "[Опис]",
-      "timeframe": "Місяць 1-2"
+      "timeframe": "Місяць 1-2",
+      "start_week": 1,
+      "end_week": 8
     },
     ... всього РІВНО 10 кроків
   ],
@@ -233,12 +245,14 @@ $answersText
     {
       "number": 1,
       "title": "[Конкретне завдання на 1-2 години]",
-      "description": "[Що саме зробити]"
+      "description": "[Що саме зробити]",
+      "strategic_step_number": 1
     },
     {
       "number": 2,
       "title": "[Завдання]",
-      "description": "[Опис]"
+      "description": "[Опис]",
+      "strategic_step_number": 1
     },
     ... всього РІВНО 10 завдань
   ]
@@ -256,18 +270,32 @@ MATCH SCORE — розрахуй за формулою:
 5. Фінансовий gap (0-20): "$currentSalary" → "$desiredSalary"
 
 СТРАТЕГІЧНІ КРОКИ (10 шт.):
-- Напрямок на 3-12 місяців
+- Напрямок на 3-12 місяців (приблизно 52 тижні)
 - Від простого до складного
 - Перші 2-3 кроки — подолання бар'єру "$barrier"
-- Timeframe: "Місяць 1-2", "Місяць 3-4", "Місяць 5-6" тощо
 - Враховуй мотивацію: "$motivation"
+
+ВАЖЛИВО ДЛЯ КРОКІВ — start_week та end_week:
+- Кроки можуть виконуватись ПАРАЛЕЛЬНО (наприклад, крок 1 і крок 2 обидва тижні 1-8)
+- Типовий розподіл:
+  * Кроки 1-3: start_week=1, end_week=8 (Місяць 1-2)
+  * Кроки 4-5: start_week=9, end_week=16 (Місяць 3-4)
+  * Кроки 6-7: start_week=17, end_week=26 (Місяць 5-6)
+  * Кроки 8-9: start_week=27, end_week=40 (Місяць 7-10)
+  * Крок 10: start_week=41, end_week=52 (Місяць 11-12)
+- Деякі кроки можуть тривати весь час (наприклад, "Розвиток впевненості" 1-52)
 
 ТИЖНЕВІ ЗАВДАННЯ (10 шт.):
 - КОНКРЕТНІ дії на ПЕРШИЙ ТИЖДЕНЬ
 - Кожне завдання можна виконати за 1-3 години
 - Реалістичні для України
 - Включай конкретні ресурси (назви курсів, сайтів)
-- Приклади: "Зареєструватись на Coursera", "Переглянути 3 відео про...", "Записати 5 ідей..."
+
+ВАЖЛИВО ДЛЯ ЗАВДАНЬ — strategic_step_number:
+- Вказуй номер кроку (1-10), до якого відноситься завдання
+- На першому тижні завдання мають бути для кроків з start_week=1
+- Розподіл: 2-3 завдання на крок 1, 2-3 на крок 2, решта на крок 3
+- Приклад: якщо крок 1 = "Самоаналіз", то завдання 1-3 мають strategic_step_number: 1
 
 ВАЖЛИВО:
 - Відповідай ТІЛЬКИ валідним JSON
@@ -319,7 +347,9 @@ MATCH SCORE — розрахуй за формулою:
                 number = stepJson.getInt("number"),
                 title = stepJson.getString("title"),
                 description = stepJson.getString("description"),
-                timeframe = stepJson.getString("timeframe")
+                timeframe = stepJson.getString("timeframe"),
+                startWeek = stepJson.optInt("start_week", 1),  // NEW
+                endWeek = stepJson.optInt("end_week", 8)       // NEW
             ))
         }
 
@@ -331,7 +361,8 @@ MATCH SCORE — розрахуй за формулою:
             weeklyTasks.add(GeneratedWeeklyTask(
                 number = taskJson.getInt("number"),
                 title = taskJson.getString("title"),
-                description = taskJson.getString("description")
+                description = taskJson.getString("description"),
+                strategicStepNumber = taskJson.optInt("strategic_step_number", 1)  // NEW
             ))
         }
 
@@ -356,25 +387,39 @@ MATCH SCORE — розрахуй за формулою:
             matchScore = 50,
             gapAnalysis = "Не вдалось проаналізувати профіль автоматично. Рекомендуємо пройти оцінку ще раз.",
             strategicSteps = (1..10).map { i ->
+                val (startW, endW) = when (i) {
+                    1, 2, 3 -> Pair(1, 8)
+                    4, 5 -> Pair(9, 16)
+                    6, 7 -> Pair(17, 26)
+                    8, 9 -> Pair(27, 40)
+                    else -> Pair(41, 52)
+                }
                 GeneratedStrategicStep(
                     number = i,
                     title = "Крок $i",
                     description = "Опис кроку $i",
-                    timeframe = "Місяць ${(i + 1) / 2}-${(i + 2) / 2}"
+                    timeframe = "Місяць ${(i + 1) / 2}-${(i + 2) / 2}",
+                    startWeek = startW,
+                    endWeek = endW
                 )
             },
             weeklyTasks = (1..10).map { i ->
                 GeneratedWeeklyTask(
                     number = i,
                     title = "Завдання $i",
-                    description = "Опис завдання $i"
+                    description = "Опис завдання $i",
+                    strategicStepNumber = when {
+                        i <= 3 -> 1
+                        i <= 6 -> 2
+                        else -> 3
+                    }
                 )
             }
         )
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // ГЕНЕРАЦІЯ НАСТУПНОГО ТИЖНЯ
+    // ГЕНЕРАЦІЯ НАСТУПНОГО ТИЖНЯ (з прив'язкою до кроків)
     // ═══════════════════════════════════════════════════════════════
 
     suspend fun generateNextWeekTasks(
@@ -386,13 +431,30 @@ MATCH SCORE — розрахуй за формулою:
         currentWeek: Int
     ): List<GeneratedWeeklyTask> {
 
+        // Знаходимо активні кроки на цьому тижні
+        val activeSteps = strategicSteps.filter { step ->
+            currentWeek >= step.startWeek && currentWeek <= step.endWeek
+        }
+
+        val activeStepsText = if (activeSteps.isNotEmpty()) {
+            activeSteps.joinToString("\n") { step ->
+                "🔄 Крок ${step.stepNumber}: ${step.title} (тижні ${step.startWeek}-${step.endWeek})"
+            }
+        } else {
+            strategicSteps.take(3).joinToString("\n") { step ->
+                "📌 Крок ${step.stepNumber}: ${step.title}"
+            }
+        }
+
         val stepsText = strategicSteps.joinToString("\n") { step ->
             val statusIcon = when (step.status) {
                 "done" -> "✅"
                 "in_progress" -> "🔄"
                 else -> "⏳"
             }
-            "$statusIcon Крок ${step.stepNumber}: ${step.title} (${step.timeframe})"
+            val isActive = currentWeek >= step.startWeek && currentWeek <= step.endWeek
+            val activeMarker = if (isActive) " ⬅️ АКТИВНИЙ" else ""
+            "$statusIcon Крок ${step.stepNumber}: ${step.title} [Тижні ${step.startWeek}-${step.endWeek}]$activeMarker"
         }
 
         val completedText = completedTasks.joinToString("\n") { "✅ ${it.title}" }
@@ -405,8 +467,11 @@ MATCH SCORE — розрахуй за формулою:
 🎯 Ціль: $goalTitle
 💰 Бажаний дохід: $targetSalary
 
-СТРАТЕГІЧНІ КРОКИ:
+СТРАТЕГІЧНІ КРОКИ (з діапазонами тижнів):
 $stepsText
+
+АКТИВНІ КРОКИ НА ТИЖНІ $currentWeek:
+$activeStepsText
 
 ТИЖДЕНЬ ${currentWeek - 1} — РЕЗУЛЬТАТИ:
 Виконано (${completedTasks.size}/10):
@@ -424,15 +489,17 @@ $skippedText
   {
     "number": 1,
     "title": "[Конкретне завдання]",
-    "description": "[Що саме зробити]"
+    "description": "[Що саме зробити]",
+    "strategic_step_number": [номер кроку 1-10]
   },
   ... всього РІВНО 10 завдань
 ]
 
 ПРАВИЛА:
+- Завдання мають бути для АКТИВНИХ кроків (де тиждень $currentWeek в діапазоні start_week-end_week)
+- Якщо активних кроків 2-3, розподіли завдання між ними
 - Враховуй що користувач пропустив деякі завдання — можливо повторити важливі
 - Завдання мають бути СКЛАДНІШИМИ ніж минулого тижня
-- Продовжуй прогрес по стратегічних кроках
 - Кожне завдання на 1-3 години
 - Конкретні ресурси та дії
 
@@ -451,12 +518,15 @@ $skippedText
 
             parseWeeklyTasks(cleanJson)
         } catch (e: Exception) {
-            // Fallback
+            // Fallback — генеруємо базові завдання для активних кроків
+            val activeStepNumbers = activeSteps.map { it.stepNumber }.ifEmpty { listOf(1, 2, 3) }
             (1..10).map { i ->
+                val stepNum = activeStepNumbers[(i - 1) % activeStepNumbers.size]
                 GeneratedWeeklyTask(
                     number = i,
                     title = "Завдання $i тижня $currentWeek",
-                    description = "Продовжуйте працювати над своєю метою"
+                    description = "Продовжуйте працювати над кроком $stepNum",
+                    strategicStepNumber = stepNum
                 )
             }
         }
@@ -471,7 +541,8 @@ $skippedText
             tasks.add(GeneratedWeeklyTask(
                 number = taskJson.getInt("number"),
                 title = taskJson.getString("title"),
-                description = taskJson.getString("description")
+                description = taskJson.getString("description"),
+                strategicStepNumber = taskJson.optInt("strategic_step_number", 1)  // NEW
             ))
         }
 
@@ -629,7 +700,7 @@ ${plan.gapAnalysis}
         val stepsText = plan.strategicSteps.joinToString("\n\n") { step ->
             """
 📍 КРОК ${step.number}: ${step.title}
-⏰ Час: ${step.timeframe}
+⏰ Час: ${step.timeframe} (тижні ${step.startWeek}-${step.endWeek})
 
 ${step.description}
 """.trimIndent()
@@ -658,7 +729,10 @@ data class StrategicStepItem(
     val title: String,
     val description: String,
     val timeframe: String,
-    val status: String // "pending", "in_progress", "done"
+    val status: String,           // "pending", "in_progress", "done"
+    val startWeek: Int = 1,       // NEW: з якого тижня
+    val endWeek: Int = 8,         // NEW: до якого тижня
+    val progressPercent: Int = 0  // NEW: відсоток прогресу (розраховується)
 )
 
 data class WeeklyTaskItem(
@@ -668,7 +742,8 @@ data class WeeklyTaskItem(
     val taskNumber: Int,
     val title: String,
     val description: String,
-    val status: String // "pending", "done", "skipped"
+    val status: String,                    // "pending", "done", "skipped"
+    val strategicStepId: String? = null    // NEW: ID кроку з Supabase
 )
 
 data class ChatMessageItem(
