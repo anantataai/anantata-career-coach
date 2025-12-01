@@ -44,7 +44,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,6 +53,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Головний екран з ціллю та тижневими завданнями (v1.5)
+ * 🆕 Додано навігацію по тижнях
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -79,6 +79,10 @@ fun GoalDashboardScreen(
     var showWeekCompleteDialog by remember { mutableStateOf(false) }
     var isGeneratingNextWeek by remember { mutableStateOf(false) }
 
+    // 🆕 Нові стани для навігації по тижнях
+    var viewingWeek by remember { mutableStateOf(1) }  // Який тиждень переглядаємо
+    var maxWeek by remember { mutableStateOf(1) }      // Скільки всього тижнів є
+
     // Завантажуємо дані при відкритті
     LaunchedEffect(Unit) {
         isLoading = true
@@ -90,19 +94,34 @@ fun GoalDashboardScreen(
                 // Отримуємо стратегічні кроки
                 strategicSteps = supabaseRepo.getStrategicSteps(goal.id)
 
-                // Отримуємо поточний тиждень
-                currentWeek = supabaseRepo.getCurrentWeekNumber(goal.id).coerceAtLeast(1)
+                // 🆕 Отримуємо максимальний номер тижня
+                maxWeek = supabaseRepo.getMaxWeekNumber(goal.id).coerceAtLeast(1)
+
+                // Поточний тиждень = останній (найновіший)
+                currentWeek = maxWeek
+                viewingWeek = maxWeek
 
                 // Отримуємо завдання поточного тижня
-                weeklyTasks = supabaseRepo.getWeeklyTasks(goal.id, currentWeek)
+                weeklyTasks = supabaseRepo.getWeeklyTasks(goal.id, viewingWeek)
 
                 // Отримуємо статистику
-                weekStats = supabaseRepo.getWeekStats(goal.id, currentWeek)
+                weekStats = supabaseRepo.getWeekStats(goal.id, viewingWeek)
             }
         } catch (e: Exception) {
             println("❌ Error loading dashboard: ${e.message}")
         } finally {
             isLoading = false
+        }
+    }
+
+    // 🆕 Функція завантаження тижня (при навігації)
+    fun loadWeek(weekNumber: Int) {
+        scope.launch {
+            primaryGoal?.let { goal ->
+                viewingWeek = weekNumber
+                weeklyTasks = supabaseRepo.getWeeklyTasks(goal.id, weekNumber)
+                weekStats = supabaseRepo.getWeekStats(goal.id, weekNumber)
+            }
         }
     }
 
@@ -118,10 +137,10 @@ fun GoalDashboardScreen(
 
                 // Оновлюємо статистику
                 primaryGoal?.let { goal ->
-                    weekStats = supabaseRepo.getWeekStats(goal.id, currentWeek)
+                    weekStats = supabaseRepo.getWeekStats(goal.id, viewingWeek)
 
-                    // Перевіряємо чи завершено тиждень
-                    if (weekStats.isComplete) {
+                    // Перевіряємо чи завершено тиждень (тільки якщо це поточний тиждень)
+                    if (viewingWeek == maxWeek && weekStats.isComplete) {
                         showWeekCompleteDialog = true
                     }
                 }
@@ -147,16 +166,19 @@ fun GoalDashboardScreen(
                         strategicSteps = strategicSteps,
                         completedTasks = completedTasks,
                         skippedTasks = skippedTasks,
-                        currentWeek = currentWeek + 1
+                        currentWeek = maxWeek + 1
                     )
 
                     // Зберігаємо в базу
-                    val saved = supabaseRepo.saveWeeklyTasks(goal.id, currentWeek + 1, newTasks)
+                    val saved = supabaseRepo.saveWeeklyTasks(goal.id, maxWeek + 1, newTasks)
 
                     if (saved) {
-                        currentWeek += 1
-                        weeklyTasks = supabaseRepo.getWeeklyTasks(goal.id, currentWeek)
-                        weekStats = supabaseRepo.getWeekStats(goal.id, currentWeek)
+                        // 🆕 Оновлюємо maxWeek і переходимо на новий тиждень
+                        maxWeek += 1
+                        currentWeek = maxWeek
+                        viewingWeek = maxWeek
+                        weeklyTasks = supabaseRepo.getWeeklyTasks(goal.id, viewingWeek)
+                        weekStats = supabaseRepo.getWeekStats(goal.id, viewingWeek)
                     }
                 }
             } catch (e: Exception) {
@@ -225,11 +247,23 @@ fun GoalDashboardScreen(
                     )
                 }
 
-                // Заголовок тижня з прогресом
+                // 🆕 Заголовок тижня з НАВІГАЦІЄЮ
                 item {
-                    WeekHeader(
-                        weekNumber = currentWeek,
-                        stats = weekStats
+                    WeekHeaderWithNavigation(
+                        viewingWeek = viewingWeek,
+                        maxWeek = maxWeek,
+                        stats = weekStats,
+                        isCurrentWeek = viewingWeek == maxWeek,
+                        onPreviousWeek = {
+                            if (viewingWeek > 1) {
+                                loadWeek(viewingWeek - 1)
+                            }
+                        },
+                        onNextWeek = {
+                            if (viewingWeek < maxWeek) {
+                                loadWeek(viewingWeek + 1)
+                            }
+                        }
                     )
                 }
 
@@ -243,14 +277,29 @@ fun GoalDashboardScreen(
                         TaskItemCard(
                             task = task,
                             onStatusChange = { newStatus ->
-                                updateTaskStatus(task, newStatus)
-                            }
+                                // 🆕 Дозволяємо змінювати статус тільки на поточному тижні
+                                if (viewingWeek == maxWeek) {
+                                    updateTaskStatus(task, newStatus)
+                                }
+                            },
+                            // 🆕 Вимикаємо редагування для історичних тижнів
+                            isEditable = viewingWeek == maxWeek
                         )
                     }
                 }
 
-                // Кнопка генерації наступного тижня (якщо всі виконані)
-                if (weekStats.isComplete && !isGeneratingNextWeek) {
+                // 🆕 Підказка якщо дивимось історію
+                if (viewingWeek < maxWeek) {
+                    item {
+                        HistoryHintCard(
+                            weekNumber = viewingWeek,
+                            onGoToCurrentWeek = { loadWeek(maxWeek) }
+                        )
+                    }
+                }
+
+                // Кнопка генерації наступного тижня (тільки на поточному тижні)
+                if (viewingWeek == maxWeek && weekStats.isComplete && !isGeneratingNextWeek) {
                     item {
                         GenerateNextWeekButton(
                             onClick = { showWeekCompleteDialog = true }
@@ -276,7 +325,7 @@ fun GoalDashboardScreen(
     // Діалог завершення тижня
     if (showWeekCompleteDialog) {
         WeekCompleteDialog(
-            weekNumber = currentWeek,
+            weekNumber = viewingWeek,
             stats = weekStats,
             onDismiss = { showWeekCompleteDialog = false },
             onGenerateNext = { generateNextWeek() },
@@ -285,6 +334,175 @@ fun GoalDashboardScreen(
                 onOpenChat()
             }
         )
+    }
+}
+
+/**
+ * 🆕 Заголовок тижня з кнопками навігації ← →
+ */
+@Composable
+fun WeekHeaderWithNavigation(
+    viewingWeek: Int,
+    maxWeek: Int,
+    stats: WeekStats,
+    isCurrentWeek: Boolean,
+    onPreviousWeek: () -> Unit,
+    onNextWeek: () -> Unit
+) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Кнопка "Попередній тиждень"
+            IconButton(
+                onClick = onPreviousWeek,
+                enabled = viewingWeek > 1
+            ) {
+                Text(
+                    text = "◀",
+                    fontSize = 20.sp,
+                    color = if (viewingWeek > 1)
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                )
+            }
+
+            // Заголовок тижня
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "📅 Тиждень $viewingWeek",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    // Позначка "поточний" або "історія"
+                    if (isCurrentWeek) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "⬤",
+                            fontSize = 10.sp,
+                            color = Color(0xFF4CAF50) // Зелений
+                        )
+                    }
+                }
+
+                // Показуємо скільки всього тижнів
+                if (maxWeek > 1) {
+                    Text(
+                        text = "з $maxWeek",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Кнопка "Наступний тиждень"
+            IconButton(
+                onClick = onNextWeek,
+                enabled = viewingWeek < maxWeek
+            ) {
+                Text(
+                    text = "▶",
+                    fontSize = 20.sp,
+                    color = if (viewingWeek < maxWeek)
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Статистика
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "Виконано: ${stats.done}/${stats.total}",
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Прогрес-бар
+        LinearProgressIndicator(
+            progress = { stats.progressPercent / 100f },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp)),
+            color = when {
+                stats.progressPercent >= 80 -> Color(0xFF4CAF50) // Зелений
+                stats.progressPercent >= 50 -> Color(0xFFFFC107) // Жовтий
+                else -> MaterialTheme.colorScheme.primary
+            },
+            trackColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+
+        if (stats.skipped > 0) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "⏭️ Пропущено: ${stats.skipped}",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+        }
+    }
+}
+
+/**
+ * 🆕 Підказка при перегляді історії
+ */
+@Composable
+fun HistoryHintCard(
+    weekNumber: Int,
+    onGoToCurrentWeek: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "📜 Це історія",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "Ви переглядаєте Тиждень $weekNumber. Завдання не можна змінювати.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            TextButton(onClick = onGoToCurrentWeek) {
+                Text("До поточного →")
+            }
+        }
     }
 }
 
@@ -419,67 +637,13 @@ fun GoalCard(
 }
 
 /**
- * Заголовок тижня з прогресом
- */
-@Composable
-fun WeekHeader(
-    weekNumber: Int,
-    stats: WeekStats
-) {
-    Column {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "📅 Тиждень $weekNumber",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Text(
-                text = "Виконано: ${stats.done}/${stats.total}",
-                fontSize = 14.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Прогрес-бар
-        LinearProgressIndicator(
-            progress = { stats.progressPercent / 100f },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(8.dp)
-                .clip(RoundedCornerShape(4.dp)),
-            color = when {
-                stats.progressPercent >= 80 -> Color(0xFF4CAF50) // Зелений
-                stats.progressPercent >= 50 -> Color(0xFFFFC107) // Жовтий
-                else -> MaterialTheme.colorScheme.primary
-            },
-            trackColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-
-        if (stats.skipped > 0) {
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "⏭️ Пропущено: ${stats.skipped}",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-/**
- * Один елемент завдання (картка)
+ * 🆕 Оновлений TaskItemCard з параметром isEditable
  */
 @Composable
 fun TaskItemCard(
     task: WeeklyTaskItem,
-    onStatusChange: (String) -> Unit
+    onStatusChange: (String) -> Unit,
+    isEditable: Boolean = true  // 🆕 Новий параметр
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -509,12 +673,15 @@ fun TaskItemCard(
                 TaskStatusButton(
                     status = task.status,
                     onToggle = {
-                        when (task.status) {
-                            "pending" -> onStatusChange("done")
-                            "done" -> onStatusChange("pending")
-                            "skipped" -> onStatusChange("pending")
+                        if (isEditable) {  // 🆕 Перевірка
+                            when (task.status) {
+                                "pending" -> onStatusChange("done")
+                                "done" -> onStatusChange("pending")
+                                "skipped" -> onStatusChange("pending")
+                            }
                         }
-                    }
+                    },
+                    isEnabled = isEditable  // 🆕 Новий параметр
                 )
 
                 Spacer(modifier = Modifier.width(12.dp))
@@ -534,8 +701,8 @@ fun TaskItemCard(
                     )
                 }
 
-                // Кнопка "пропустити"
-                if (task.status == "pending") {
+                // Кнопка "пропустити" (тільки якщо editable)
+                if (task.status == "pending" && isEditable) {
                     IconButton(
                         onClick = { onStatusChange("skipped") }
                     ) {
@@ -558,16 +725,18 @@ fun TaskItemCard(
 }
 
 /**
- * Кнопка статусу завдання (emoji)
+ * 🆕 Оновлена кнопка статусу з параметром isEnabled
  */
 @Composable
 fun TaskStatusButton(
     status: String,
-    onToggle: () -> Unit
+    onToggle: () -> Unit,
+    isEnabled: Boolean = true  // 🆕 Новий параметр
 ) {
     IconButton(
         onClick = onToggle,
-        modifier = Modifier.size(40.dp)
+        modifier = Modifier.size(40.dp),
+        enabled = isEnabled
     ) {
         Text(
             text = when (status) {
@@ -575,7 +744,11 @@ fun TaskStatusButton(
                 "skipped" -> "⏭️"
                 else -> "🔲"
             },
-            fontSize = 24.sp
+            fontSize = 24.sp,
+            color = if (isEnabled)
+                Color.Unspecified
+            else
+                Color.Unspecified.copy(alpha = 0.5f)
         )
     }
 }

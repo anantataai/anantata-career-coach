@@ -26,19 +26,25 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -196,13 +202,11 @@ fun MainApp(
                 onComplete = {
                     onFirstAssessmentComplete()
                     showFirstAssessment = false
-                    // v1.5: Після першого assessment — показуємо Dashboard
                     showDashboard = true
                 }
             )
         }
 
-        // Показ збереженого результату з історії
         viewingHistoryItem != null -> {
             val item = viewingHistoryItem!!
             val parsedResult = parseAssessmentResults(item.gapAnalysis, item.actionPlan)
@@ -251,7 +255,6 @@ fun MainApp(
             )
         }
 
-        // v1.5: Екран стратегії
         showStrategy -> {
             StrategyScreen(
                 userId = userId,
@@ -262,7 +265,6 @@ fun MainApp(
             )
         }
 
-        // v1.5: Екран списку цілей
         showGoalsList -> {
             GoalsListScreen(
                 userId = userId,
@@ -277,7 +279,6 @@ fun MainApp(
             )
         }
 
-        // v1.5: Головний Dashboard з завданнями
         showDashboard -> {
             GoalDashboardScreen(
                 userId = userId,
@@ -304,7 +305,6 @@ fun MainApp(
             )
         }
 
-        // v1.5: Чат (тепер окремий екран)
         showChat -> {
             ChatScreen(
                 userId = userId,
@@ -324,7 +324,6 @@ fun MainApp(
         }
 
         else -> {
-            // За замовчуванням — показуємо Dashboard якщо є ціль, інакше чат
             LaunchedEffect(Unit) {
                 val supabaseRepo = SupabaseRepository()
                 val primaryGoal = supabaseRepo.getPrimaryGoal(userId)
@@ -336,7 +335,6 @@ fun MainApp(
                 }
             }
 
-            // Показуємо лоадер поки визначаємо куди йти
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -346,6 +344,10 @@ fun MainApp(
         }
     }
 }
+
+// ════════════════════════════════════════════════════════════════
+// FIRST ASSESSMENT FLOW
+// ════════════════════════════════════════════════════════════════
 
 @Composable
 fun FirstAssessmentFlow(
@@ -364,8 +366,8 @@ fun FirstAssessmentFlow(
     var savedGapAnalysis by remember { mutableStateOf("") }
     var savedActionPlan by remember { mutableStateOf("") }
 
-    // v1.5: Зберігаємо згенерований план
     var generatedPlan by remember { mutableStateOf<GeneratedPlan?>(null) }
+    var planSaved by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
 
@@ -385,28 +387,11 @@ fun FirstAssessmentFlow(
                 assessmentResult = null
                 savedAnswers = emptyMap()
                 generatedPlan = null
+                planSaved = false
             },
             onDiscussPlan = {
-                Log.d(TAG, "🎯 onDiscussPlan clicked!")
-                Log.d(TAG, "📦 generatedPlan = $generatedPlan")
-
-                // Після першого assessment — зберігаємо план і завершуємо
-                // ВАЖЛИВО: чекаємо завершення перед переходом!
-                scope.launch {
-                    if (generatedPlan != null) {
-                        Log.d(TAG, "💾 Saving plan: ${generatedPlan!!.goal.title}")
-                        val goalId = supabaseRepo.saveCompletePlan(
-                            userId = userId,
-                            plan = generatedPlan!!,
-                            makePrimary = true
-                        )
-                        Log.d(TAG, "✅ Plan saved with goalId: $goalId")
-                    } else {
-                        Log.e(TAG, "❌ generatedPlan is NULL!")
-                    }
-                    // Тільки після збереження завершуємо
-                    onComplete()
-                }
+                Log.d(TAG, "🎯 onDiscussPlan clicked! Plan already saved: $planSaved")
+                onComplete()
             }
         )
     } else if (isProcessing) {
@@ -438,13 +423,24 @@ fun FirstAssessmentFlow(
                         val questions = geminiRepo.generateAssessmentQuestions("Повну")
                         Log.d(TAG, "📋 Generated ${questions.size} questions")
 
-                        // v1.5: Використовуємо нову функцію генерації плану
                         Log.d(TAG, "🔄 Calling generateGoalWithPlan...")
                         val plan = geminiRepo.generateGoalWithPlan(answersMap, questions)
                         generatedPlan = plan
                         Log.d(TAG, "✅ Plan generated: ${plan.goal.title}, ${plan.strategicSteps.size} steps, ${plan.weeklyTasks.size} tasks")
 
-                        // Формуємо gapAnalysis у форматі який розуміє parseAssessmentResults
+                        Log.d(TAG, "💾 AUTO-SAVING plan immediately...")
+                        val goalId = supabaseRepo.saveCompletePlan(
+                            userId = userId,
+                            plan = plan,
+                            makePrimary = true
+                        )
+                        if (goalId != null) {
+                            planSaved = true
+                            Log.d(TAG, "✅ Plan AUTO-SAVED with goalId: $goalId")
+                        } else {
+                            Log.e(TAG, "❌ Failed to auto-save plan")
+                        }
+
                         savedGapAnalysis = buildString {
                             appendLine("Match Score: ${plan.matchScore}%")
                             appendLine()
@@ -459,7 +455,6 @@ fun FirstAssessmentFlow(
                             appendLine("ЧАС ДО МЕТИ: 6-12 місяців")
                         }
 
-                        // Формуємо actionPlan у форматі який розуміє parseAssessmentResults
                         savedActionPlan = plan.strategicSteps.joinToString("\n\n") { step ->
                             buildString {
                                 appendLine("КРОК ${step.number}: ${step.title}")
@@ -472,11 +467,9 @@ fun FirstAssessmentFlow(
                         supabaseRepo.saveMessage(conversationId, "assistant", savedGapAnalysis)
                         supabaseRepo.saveMessage(conversationId, "assistant", savedActionPlan)
 
-                        // Парсимо результат стандартною функцією
                         assessmentResult = parseAssessmentResults(savedGapAnalysis, savedActionPlan)
                         Log.d(TAG, "📊 Parsed result: matchScore=${assessmentResult?.matchScore}")
 
-                        // Зберігаємо результат в assessment_results (для історії)
                         assessmentResult?.let { result ->
                             supabaseRepo.saveAssessmentResult(
                                 userId = userId,
@@ -503,6 +496,11 @@ fun FirstAssessmentFlow(
     }
 }
 
+// ════════════════════════════════════════════════════════════════
+// CHAT SCREEN — v1.5 з історією чату та контекстом для ШІ
+// ════════════════════════════════════════════════════════════════
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     userId: String,
@@ -515,10 +513,10 @@ fun ChatScreen(
 ) {
     val geminiRepo = remember { GeminiRepository() }
     val supabaseRepo = remember { SupabaseRepository() }
-    val conversationId = remember { java.util.UUID.randomUUID().toString() }
 
     val context = LocalContext.current
 
+    // UI стани
     var messages by remember { mutableStateOf(listOf<ChatMessage>()) }
     var inputText by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
@@ -527,25 +525,73 @@ fun ChatScreen(
     var assessmentResult by remember { mutableStateOf<ParsedAssessmentResult?>(null) }
     var showFabMenu by remember { mutableStateOf(false) }
 
+    // Дані для контексту ШІ
+    var primaryGoal by remember { mutableStateOf<GoalItem?>(null) }
+    var strategicSteps by remember { mutableStateOf<List<StrategicStepItem>>(emptyList()) }
+    var weeklyTasks by remember { mutableStateOf<List<WeeklyTaskItem>>(emptyList()) }
+    var currentWeek by remember { mutableStateOf(1) }
+
+    // Assessment стани
     var savedAnswers by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
     var savedGapAnalysis by remember { mutableStateOf("") }
     var savedActionPlan by remember { mutableStateOf("") }
     var latestAssessment by remember { mutableStateOf<AssessmentHistoryItem?>(null) }
-    var isLoadingHistory by remember { mutableStateOf(true) }
 
-    // v1.5: Згенерований план
+    // Завантаження стани
+    var isLoadingData by remember { mutableStateOf(true) }
+
     var generatedPlan by remember { mutableStateOf<GeneratedPlan?>(null) }
+    var planSaved by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
+    // ════════════════════════════════════════════════════════════════
+    // 🆕 ЗАВАНТАЖЕННЯ ДАНИХ: Goal + Steps + Tasks + Chat History
+    // ════════════════════════════════════════════════════════════════
     LaunchedEffect(Unit) {
-        supabaseRepo.createConversation(conversationId)
-        val history = supabaseRepo.getAssessmentHistory(userId)
-        latestAssessment = history.firstOrNull()
-        isLoadingHistory = false
+        isLoadingData = true
+        try {
+            // Завантажуємо головну ціль
+            primaryGoal = supabaseRepo.getPrimaryGoal(userId)
+            Log.d(TAG, "💬 Chat: Primary goal loaded: ${primaryGoal?.title ?: "NULL"}")
+
+            primaryGoal?.let { goal ->
+                // Завантажуємо стратегічні кроки
+                strategicSteps = supabaseRepo.getStrategicSteps(goal.id)
+                Log.d(TAG, "💬 Chat: Loaded ${strategicSteps.size} strategic steps")
+
+                // Завантажуємо поточний тиждень
+                currentWeek = supabaseRepo.getMaxWeekNumber(goal.id)
+                Log.d(TAG, "💬 Chat: Current week: $currentWeek")
+
+                // Завантажуємо завдання поточного тижня
+                weeklyTasks = supabaseRepo.getWeeklyTasks(goal.id, currentWeek)
+                Log.d(TAG, "💬 Chat: Loaded ${weeklyTasks.size} weekly tasks")
+
+                // 🆕 Завантажуємо історію чату
+                val chatHistory = supabaseRepo.getChatHistory(goal.id, 50)
+                Log.d(TAG, "💬 Chat: Loaded ${chatHistory.size} chat messages from history")
+
+                if (chatHistory.isNotEmpty()) {
+                    messages = chatHistory.map { msg ->
+                        ChatMessage(role = msg.role, content = msg.content)
+                    }
+                }
+            }
+
+            // Завантажуємо останній assessment для WelcomeCard
+            val history = supabaseRepo.getAssessmentHistory(userId)
+            latestAssessment = history.firstOrNull()
+
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error loading chat data: ${e.message}")
+        } finally {
+            isLoadingData = false
+        }
     }
 
+    // Trigger assessment
     LaunchedEffect(triggerAssessment) {
         if (triggerAssessment) {
             showAssessmentScreen = true
@@ -553,6 +599,7 @@ fun ChatScreen(
         }
     }
 
+    // Initial plan context
     LaunchedEffect(initialPlanContext) {
         if (initialPlanContext != null) {
             val answersMap = parseAnswersFromJson(initialPlanContext.answers)
@@ -570,12 +617,51 @@ fun ChatScreen(
         }
     }
 
+    // Hide FAB menu when loading
     LaunchedEffect(isLoading) {
         if (isLoading) {
             showFabMenu = false
         }
     }
 
+    // Scroll to bottom when new messages
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // 🆕 ФУНКЦІЯ: Побудувати контекст для ШІ
+    // ════════════════════════════════════════════════════════════════
+    fun buildCurrentContext(): String? {
+        val goal = primaryGoal ?: return null
+
+        // Конвертуємо ChatMessage в ChatMessageItem для buildAIContext
+        val chatMessageItems = messages.takeLast(10).map { msg ->
+            ChatMessageItem(
+                id = "",
+                userId = userId,
+                goalId = goal.id,
+                role = msg.role,
+                content = msg.content,
+                createdAt = ""
+            )
+        }
+
+        return geminiRepo.buildAIContext(
+            goalTitle = goal.title,
+            targetSalary = goal.targetSalary,
+            strategicSteps = strategicSteps,
+            weeklyTasks = weeklyTasks,
+            currentWeek = currentWeek,
+            chatHistory = chatMessageItems
+        )
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // UI: Assessment Results Screen
+    // ════════════════════════════════════════════════════════════════
     if (showResultsScreen && assessmentResult != null) {
         AssessmentResultsScreen(
             result = assessmentResult!!,
@@ -588,36 +674,19 @@ fun ChatScreen(
                 assessmentResult = null
                 savedAnswers = emptyMap()
                 generatedPlan = null
+                planSaved = false
                 showAssessmentScreen = true
             },
             onDiscussPlan = {
-                Log.d(TAG, "🎯 ChatScreen: onDiscussPlan clicked!")
-                Log.d(TAG, "📦 ChatScreen: generatedPlan = $generatedPlan")
-
-                // v1.5: Зберігаємо план і переходимо на Dashboard
-                // ВАЖЛИВО: чекаємо завершення перед переходом!
-                scope.launch {
-                    if (generatedPlan != null) {
-                        Log.d(TAG, "💾 ChatScreen: Saving plan...")
-                        val goalId = supabaseRepo.saveCompletePlan(
-                            userId = userId,
-                            plan = generatedPlan!!,
-                            makePrimary = true
-                        )
-                        Log.d(TAG, "✅ ChatScreen: Plan saved with goalId: $goalId")
-
-                        // Тільки після збереження переходимо далі
-                        showResultsScreen = false
-                        onBackToDashboard()
-                    } else {
-                        Log.e(TAG, "❌ ChatScreen: generatedPlan is NULL!")
-                        showResultsScreen = false
-                        onBackToDashboard()
-                    }
-                }
+                Log.d(TAG, "🎯 ChatScreen: onDiscussPlan clicked! Plan already saved: $planSaved")
+                showResultsScreen = false
+                onBackToDashboard()
             }
         )
     }
+    // ════════════════════════════════════════════════════════════════
+    // UI: Assessment Screen
+    // ════════════════════════════════════════════════════════════════
     else if (showAssessmentScreen) {
         AssessmentScreenUI(
             assessmentType = "Повну",
@@ -639,13 +708,29 @@ fun ChatScreen(
                     isLoading = true
 
                     try {
-                        // v1.5: Використовуємо нову функцію
                         Log.d(TAG, "🔄 ChatScreen: Calling generateGoalWithPlan...")
                         val plan = geminiRepo.generateGoalWithPlan(answersMap, questions)
                         generatedPlan = plan
                         Log.d(TAG, "✅ ChatScreen: Plan generated: ${plan.goal.title}")
 
-                        // Формуємо gapAnalysis
+                        Log.d(TAG, "💾 ChatScreen: AUTO-SAVING plan immediately...")
+                        val goalId = supabaseRepo.saveCompletePlan(
+                            userId = userId,
+                            plan = plan,
+                            makePrimary = true
+                        )
+                        if (goalId != null) {
+                            planSaved = true
+                            // Оновлюємо локальні дані
+                            primaryGoal = supabaseRepo.getPrimaryGoal(userId)
+                            strategicSteps = supabaseRepo.getStrategicSteps(goalId)
+                            weeklyTasks = supabaseRepo.getWeeklyTasks(goalId, 1)
+                            currentWeek = 1
+                            Log.d(TAG, "✅ ChatScreen: Plan AUTO-SAVED with goalId: $goalId")
+                        } else {
+                            Log.e(TAG, "❌ ChatScreen: Failed to auto-save plan")
+                        }
+
                         savedGapAnalysis = buildString {
                             appendLine("Match Score: ${plan.matchScore}%")
                             appendLine()
@@ -661,18 +746,17 @@ fun ChatScreen(
                         }
 
                         messages = messages + ChatMessage("assistant", savedGapAnalysis)
-                        supabaseRepo.saveMessage(conversationId, "assistant", savedGapAnalysis)
 
-                        listState.animateScrollToItem(messages.size - 1)
+                        // Зберігаємо в chat_messages
+                        primaryGoal?.let { goal ->
+                            supabaseRepo.saveChatMessage(userId, goal.id, "assistant", savedGapAnalysis)
+                        }
 
                         messages = messages + ChatMessage(
                             "assistant",
                             "📋 Генерую персоналізований план з 10 кроків...\n\n⏳ Це може зайняти до 30 секунд."
                         )
 
-                        listState.animateScrollToItem(messages.size - 1)
-
-                        // Формуємо actionPlan
                         savedActionPlan = plan.strategicSteps.joinToString("\n\n") { step ->
                             buildString {
                                 appendLine("КРОК ${step.number}: ${step.title}")
@@ -683,9 +767,12 @@ fun ChatScreen(
                         }
 
                         messages = messages + ChatMessage("assistant", savedActionPlan)
-                        supabaseRepo.saveMessage(conversationId, "assistant", savedActionPlan)
 
-                        // Парсимо результат стандартною функцією
+                        // Зберігаємо в chat_messages
+                        primaryGoal?.let { goal ->
+                            supabaseRepo.saveChatMessage(userId, goal.id, "assistant", savedActionPlan)
+                        }
+
                         assessmentResult = parseAssessmentResults(savedGapAnalysis, savedActionPlan)
 
                         assessmentResult?.let { result ->
@@ -709,8 +796,6 @@ fun ChatScreen(
                     } finally {
                         isLoading = false
                     }
-
-                    listState.animateScrollToItem(messages.size - 1)
                 }
             },
             onCancel = {
@@ -718,224 +803,322 @@ fun ChatScreen(
             }
         )
     }
+    // ════════════════════════════════════════════════════════════════
+    // UI: Chat Screen
+    // ════════════════════════════════════════════════════════════════
     else {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Column(
-                modifier = Modifier.fillMaxSize()
-            ) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (messages.isEmpty() && !isLoadingHistory && initialPlanContext == null) {
-                        item {
-                            WelcomeMessageCard(
-                                latestAssessment = latestAssessment,
-                                onDiscussPlan = {
-                                    latestAssessment?.let { assessment ->
-                                        val answersMap = parseAnswersFromJson(assessment.answers)
-                                        val goalAnswer = answersMap["8"] ?: "Досягти кар'єрної мети"
-                                        val salaryAnswer = answersMap["9"] ?: "Збільшити дохід"
-
-                                        val contextMessage = generatePlanContext(
-                                            goalAnswer = goalAnswer,
-                                            salaryAnswer = salaryAnswer,
-                                            actionPlan = assessment.actionPlan
-                                        )
-
-                                        messages = listOf(ChatMessage("assistant", contextMessage))
-                                    }
-                                }
-                            )
-                        }
-                    }
-
-                    items(messages) { message ->
-                        MessageBubble(message)
-                    }
-
-                    if (isLoading) {
-                        item {
-                            CircularProgressIndicator(
-                                modifier = Modifier.padding(16.dp)
-                            )
-                        }
-                    }
-                }
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("Напишіть повідомлення...") },
-                        enabled = !isLoading
-                    )
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    Button(
-                        onClick = {
-                            if (inputText.isNotBlank() && !isLoading) {
-                                val userMessage = inputText
-                                messages = messages + ChatMessage("user", userMessage)
-                                scope.launch {
-                                    supabaseRepo.saveMessage(conversationId, "user", userMessage)
-                                }
-                                inputText = ""
-                                isLoading = true
-
-                                scope.launch {
-                                    try {
-                                        val aiResponse = StringBuilder()
-                                        geminiRepo.sendMessage(userMessage).collect { chunk ->
-                                            aiResponse.append(chunk)
-                                        }
-
-                                        messages = messages + ChatMessage("assistant", aiResponse.toString())
-                                        supabaseRepo.saveMessage(conversationId, "assistant", aiResponse.toString())
-                                    } catch (e: Exception) {
-                                        messages = messages + ChatMessage(
-                                            "assistant",
-                                            "Вибачте, сталася помилка: ${e.message}"
-                                        )
-                                    } finally {
-                                        isLoading = false
-                                    }
-
-                                    listState.animateScrollToItem(messages.size - 1)
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("💬", fontSize = 24.sp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "Чат з коучем",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp
+                                )
+                                primaryGoal?.let { goal ->
+                                    Text(
+                                        text = goal.title,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 }
                             }
-                        },
-                        enabled = !isLoading && inputText.isNotBlank()
-                    ) {
-                        Text("→")
-                    }
-                }
-            }
-
-            // FAB меню
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp)
-                    .padding(bottom = 80.dp),
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (showFabMenu && !isLoading) {
-                    // v1.5: Кнопка "Dashboard"
-                    SmallFloatingActionButton(
-                        onClick = {
-                            showFabMenu = false
-                            onBackToDashboard()
-                        },
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("📊", fontSize = 20.sp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Прогрес", fontSize = 14.sp)
-                        }
-                    }
-
-                    // Відгук
-                    SmallFloatingActionButton(
-                        onClick = {
-                            showFabMenu = false
-                            val intent = Intent(Intent.ACTION_VIEW).apply {
-                                data = Uri.parse("https://play.google.com/store/apps/details?id=ai.anantata.careercoach")
-                                setPackage("com.android.vending")
-                            }
-                            try {
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                val browserIntent = Intent(Intent.ACTION_VIEW).apply {
-                                    data = Uri.parse("https://play.google.com/store/apps/details?id=ai.anantata.careercoach")
-                                }
-                                context.startActivity(browserIntent)
-                            }
-                        },
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("⭐", fontSize = 20.sp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Відгук", fontSize = 14.sp)
-                        }
-                    }
-
-                    // Історія
-                    SmallFloatingActionButton(
-                        onClick = {
-                            showFabMenu = false
-                            onOpenHistory()
-                        },
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("📋", fontSize = 20.sp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Історія", fontSize = 14.sp)
-                        }
-                    }
-
-                    // Нова оцінка
-                    SmallFloatingActionButton(
-                        onClick = {
-                            showFabMenu = false
-                            showAssessmentScreen = true
-                        },
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("🎯", fontSize = 20.sp)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Нова оцінка", fontSize = 14.sp)
-                        }
-                    }
-                }
-
-                FloatingActionButton(
-                    onClick = {
-                        if (!isLoading) {
-                            showFabMenu = !showFabMenu
                         }
                     },
-                    containerColor = if (isLoading) {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.primaryContainer
-                    }
-                ) {
-                    Icon(
-                        imageVector = if (showFabMenu) Icons.Default.Close else Icons.Default.Add,
-                        contentDescription = "Меню",
-                        tint = if (isLoading) {
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                        } else {
-                            MaterialTheme.colorScheme.onPrimaryContainer
+                    navigationIcon = {
+                        IconButton(onClick = onBackToDashboard) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Назад"
+                            )
                         }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface
                     )
+                )
+            }
+        ) { paddingValues ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    // Messages list
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Welcome card якщо немає повідомлень
+                        if (messages.isEmpty() && !isLoadingData && initialPlanContext == null) {
+                            item {
+                                WelcomeMessageCard(
+                                    latestAssessment = latestAssessment,
+                                    onDiscussPlan = {
+                                        latestAssessment?.let { assessment ->
+                                            val answersMap = parseAnswersFromJson(assessment.answers)
+                                            val goalAnswer = answersMap["8"] ?: "Досягти кар'єрної мети"
+                                            val salaryAnswer = answersMap["9"] ?: "Збільшити дохід"
+
+                                            val contextMessage = generatePlanContext(
+                                                goalAnswer = goalAnswer,
+                                                salaryAnswer = salaryAnswer,
+                                                actionPlan = assessment.actionPlan
+                                            )
+
+                                            messages = listOf(ChatMessage("assistant", contextMessage))
+                                        }
+                                    }
+                                )
+                            }
+                        }
+
+                        // Loading indicator
+                        if (isLoadingData) {
+                            item {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                                }
+                            }
+                        }
+
+                        // Messages
+                        items(messages) { message ->
+                            MessageBubble(message)
+                        }
+
+                        // Loading indicator for AI response
+                        if (isLoading) {
+                            item {
+                                Row(
+                                    modifier = Modifier.padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(24.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Коуч думає...",
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Input field
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = inputText,
+                            onValueChange = { inputText = it },
+                            modifier = Modifier.weight(1f),
+                            placeholder = { Text("Напишіть повідомлення...") },
+                            enabled = !isLoading,
+                            shape = RoundedCornerShape(24.dp),
+                            singleLine = false,
+                            maxLines = 3
+                        )
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        Button(
+                            onClick = {
+                                if (inputText.isNotBlank() && !isLoading) {
+                                    val userMessage = inputText
+                                    messages = messages + ChatMessage("user", userMessage)
+                                    inputText = ""
+                                    isLoading = true
+
+                                    scope.launch {
+                                        try {
+                                            // 🆕 Зберігаємо повідомлення користувача
+                                            primaryGoal?.let { goal ->
+                                                supabaseRepo.saveChatMessage(userId, goal.id, "user", userMessage)
+                                            }
+
+                                            // 🆕 Будуємо контекст
+                                            val aiContext = buildCurrentContext()
+                                            Log.d(TAG, "💬 AI Context built: ${aiContext?.take(200) ?: "NULL"}...")
+
+                                            // 🆕 Відправляємо з контекстом
+                                            val aiResponse = StringBuilder()
+                                            if (aiContext != null) {
+                                                geminiRepo.sendMessageWithContext(userMessage, aiContext).collect { chunk ->
+                                                    aiResponse.append(chunk)
+                                                }
+                                            } else {
+                                                geminiRepo.sendMessage(userMessage).collect { chunk ->
+                                                    aiResponse.append(chunk)
+                                                }
+                                            }
+
+                                            val responseText = aiResponse.toString()
+                                            messages = messages + ChatMessage("assistant", responseText)
+
+                                            // 🆕 Зберігаємо відповідь ШІ
+                                            primaryGoal?.let { goal ->
+                                                supabaseRepo.saveChatMessage(userId, goal.id, "assistant", responseText)
+                                            }
+
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "❌ Chat error: ${e.message}")
+                                            messages = messages + ChatMessage(
+                                                "assistant",
+                                                "Вибачте, сталася помилка: ${e.message}"
+                                            )
+                                        } finally {
+                                            isLoading = false
+                                        }
+                                    }
+                                }
+                            },
+                            enabled = !isLoading && inputText.isNotBlank(),
+                            shape = RoundedCornerShape(24.dp)
+                        ) {
+                            Text("→", fontSize = 18.sp)
+                        }
+                    }
+                }
+
+                // ════════════════════════════════════════════════════════════════
+                // FAB меню з кнопкою "📊 Прогрес"
+                // ════════════════════════════════════════════════════════════════
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
+                        .padding(bottom = 80.dp),
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (showFabMenu && !isLoading) {
+                        // 📊 Прогрес (ПОВЕРНУЛИ!)
+                        SmallFloatingActionButton(
+                            onClick = {
+                                showFabMenu = false
+                                onBackToDashboard()
+                            },
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("📊", fontSize = 20.sp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Прогрес", fontSize = 14.sp)
+                            }
+                        }
+
+                        // ⭐ Відгук
+                        SmallFloatingActionButton(
+                            onClick = {
+                                showFabMenu = false
+                                val intent = Intent(Intent.ACTION_VIEW).apply {
+                                    data = Uri.parse("https://play.google.com/store/apps/details?id=ai.anantata.careercoach")
+                                    setPackage("com.android.vending")
+                                }
+                                try {
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    val browserIntent = Intent(Intent.ACTION_VIEW).apply {
+                                        data = Uri.parse("https://play.google.com/store/apps/details?id=ai.anantata.careercoach")
+                                    }
+                                    context.startActivity(browserIntent)
+                                }
+                            },
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("⭐", fontSize = 20.sp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Відгук", fontSize = 14.sp)
+                            }
+                        }
+
+                        // 📋 Історія
+                        SmallFloatingActionButton(
+                            onClick = {
+                                showFabMenu = false
+                                onOpenHistory()
+                            },
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("📋", fontSize = 20.sp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Історія", fontSize = 14.sp)
+                            }
+                        }
+
+                        // 🎯 Нова оцінка
+                        SmallFloatingActionButton(
+                            onClick = {
+                                showFabMenu = false
+                                showAssessmentScreen = true
+                            },
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("🎯", fontSize = 20.sp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Нова оцінка", fontSize = 14.sp)
+                            }
+                        }
+                    }
+
+                    FloatingActionButton(
+                        onClick = {
+                            if (!isLoading) {
+                                showFabMenu = !showFabMenu
+                            }
+                        },
+                        containerColor = if (isLoading) {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.primaryContainer
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (showFabMenu) Icons.Default.Close else Icons.Default.Add,
+                            contentDescription = "Меню",
+                            tint = if (isLoading) {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            } else {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -1048,7 +1231,12 @@ fun MessageBubble(message: ChatMessage) {
             Arrangement.End else Arrangement.Start
     ) {
         Surface(
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(
+                topStart = 16.dp,
+                topEnd = 16.dp,
+                bottomStart = if (message.role == "user") 16.dp else 4.dp,
+                bottomEnd = if (message.role == "user") 4.dp else 16.dp
+            ),
             color = if (message.role == "user")
                 MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.secondaryContainer,
@@ -1071,38 +1259,9 @@ data class ChatMessage(
 )
 
 // ════════════════════════════════════════════════════════════════
-// ЗАГЛУШКИ для ще не створених екранів (будуть в наступних кроках)
+// ЗАГЛУШКА для GoalsListScreen
 // ════════════════════════════════════════════════════════════════
 
-/**
- * Екран стратегії (заглушка — буде в Кроці 3)
- */
-@Composable
-fun StrategyScreen(
-    userId: String,
-    onBack: () -> Unit
-) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text("📋 Екран стратегії", fontSize = 24.sp)
-            Spacer(modifier = Modifier.height(16.dp))
-            Text("(Буде додано в наступному кроці)")
-            Spacer(modifier = Modifier.height(24.dp))
-            Button(onClick = onBack) {
-                Text("← Назад")
-            }
-        }
-    }
-}
-
-/**
- * Екран списку цілей (заглушка — буде в Кроці 4)
- */
 @Composable
 fun GoalsListScreen(
     userId: String,
@@ -1118,7 +1277,7 @@ fun GoalsListScreen(
         ) {
             Text("📁 Список цілей", fontSize = 24.sp)
             Spacer(modifier = Modifier.height(16.dp))
-            Text("(Буде додано в наступному кроці)")
+            Text("(Буде додано в наступній версії)")
             Spacer(modifier = Modifier.height(24.dp))
             Button(onClick = onBack) {
                 Text("← Назад")

@@ -384,25 +384,40 @@ class SupabaseRepository {
     }
 
     /**
-     * Встановлює ціль як головну (і знімає з інших)
+     * 🔧 ВИПРАВЛЕНО: Знімає is_primary з УСІХ цілей користувача
      */
-    suspend fun setPrimaryGoal(userId: String, goalId: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun resetAllPrimaryGoals(userId: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            // 1. Знімаємо primary з усіх цілей користувача
-            val resetUrl = URL("$baseUrl/rest/v1/goals?user_id=eq.$userId")
-            val resetConnection = resetUrl.openConnection() as HttpURLConnection
-            resetConnection.apply {
+            val url = URL("$baseUrl/rest/v1/goals?user_id=eq.$userId")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.apply {
                 requestMethod = "PATCH"
                 setRequestProperty("apikey", apiKey)
                 setRequestProperty("Authorization", "Bearer $apiKey")
                 setRequestProperty("Content-Type", "application/json")
                 doOutput = true
             }
-            resetConnection.outputStream.use { os ->
+            connection.outputStream.use { os ->
                 os.write("""{"is_primary": false}""".toByteArray())
             }
-            resetConnection.responseCode
-            resetConnection.disconnect()
+            val responseCode = connection.responseCode
+            connection.disconnect()
+
+            println("✅ Reset is_primary for ALL goals of user: $userId (HTTP $responseCode)")
+            responseCode in 200..299
+        } catch (e: Exception) {
+            println("❌ Error resetting primary goals: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Встановлює ціль як головну (і знімає з інших)
+     */
+    suspend fun setPrimaryGoal(userId: String, goalId: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            // 1. Знімаємо primary з усіх цілей користувача
+            resetAllPrimaryGoals(userId)
 
             // 2. Встановлюємо primary для обраної цілі
             val setUrl = URL("$baseUrl/rest/v1/goals?id=eq.$goalId")
@@ -642,7 +657,7 @@ class SupabaseRepository {
             val responseCode = connection.responseCode
             connection.disconnect()
 
-            println("✅ Weekly tasks saved for week $weekNumber")
+            println("✅ Weekly tasks saved for goal $goalId, week $weekNumber")
             responseCode in 200..299
         } catch (e: Exception) {
             println("❌ Error saving weekly tasks: ${e.message}")
@@ -716,6 +731,39 @@ class SupabaseRepository {
             }
         } catch (e: Exception) {
             println("❌ Error getting current week: ${e.message}")
+            1
+        }
+    }
+
+    /**
+     * Отримує максимальний номер тижня для цілі
+     * Використовується для навігації по тижнях
+     * @return Максимальний номер тижня або 1 якщо тижнів немає
+     */
+    suspend fun getMaxWeekNumber(goalId: String): Int = withContext(Dispatchers.IO) {
+        try {
+            val url = URL("$baseUrl/rest/v1/weekly_tasks?goal_id=eq.$goalId&select=week_number&order=week_number.desc&limit=1")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.apply {
+                requestMethod = "GET"
+                setRequestProperty("apikey", apiKey)
+                setRequestProperty("Authorization", "Bearer $apiKey")
+            }
+
+            val response = connection.inputStream.bufferedReader().readText()
+            connection.disconnect()
+
+            val jsonArray = JSONArray(response)
+            if (jsonArray.length() > 0) {
+                val maxWeek = jsonArray.getJSONObject(0).getInt("week_number")
+                println("📅 Max week number for goal $goalId: $maxWeek")
+                maxWeek
+            } else {
+                println("📅 No weeks found for goal $goalId, returning 1")
+                1
+            }
+        } catch (e: Exception) {
+            println("❌ Error getting max week number: ${e.message}")
             1
         }
     }
@@ -898,11 +946,12 @@ class SupabaseRepository {
     }
 
     // ════════════════════════════════════════════════════════════════
-    // КОМПЛЕКСНА ФУНКЦІЯ: Зберегти весь план
+    // 🔧 ВИПРАВЛЕНО: КОМПЛЕКСНА ФУНКЦІЯ — Зберегти весь план
     // ════════════════════════════════════════════════════════════════
 
     /**
      * Зберігає повний план: ціль + кроки + завдання
+     * 🔧 ВИПРАВЛЕНО: Правильно знімає is_primary зі старих цілей
      * @return ID створеної цілі або null при помилці
      */
     suspend fun saveCompletePlan(
@@ -919,17 +968,13 @@ class SupabaseRepository {
                 return@withContext null
             }
 
-            // 2. Якщо makePrimary — знімаємо primary з інших
+            // 2. 🔧 ВИПРАВЛЕНО: Якщо makePrimary — знімаємо primary з УСІХ цілей
             if (makePrimary) {
-                val goals = getGoals(userId)
-                goals.forEach { goal ->
-                    if (goal.isPrimary) {
-                        setPrimaryGoal(userId, goal.id) // Скине primary
-                    }
-                }
+                println("🔄 Resetting is_primary for all existing goals...")
+                resetAllPrimaryGoals(userId)
             }
 
-            // 3. Створюємо ціль
+            // 3. Створюємо ціль (ЗАВЖДИ з Тижня 1!)
             val goalId = createGoal(
                 userId = userId,
                 title = plan.goal.title,
@@ -943,19 +988,21 @@ class SupabaseRepository {
                 return@withContext null
             }
 
+            println("✅ New goal created: $goalId (is_primary: $makePrimary)")
+
             // 4. Зберігаємо стратегічні кроки
             val stepsResult = saveStrategicSteps(goalId, plan.strategicSteps)
             if (!stepsResult) {
                 println("⚠️ Warning: Failed to save strategic steps")
             }
 
-            // 5. Зберігаємо тижневі завдання (Тиждень 1)
+            // 5. Зберігаємо тижневі завдання (ЗАВЖДИ Тиждень 1!)
             val tasksResult = saveWeeklyTasks(goalId, 1, plan.weeklyTasks)
             if (!tasksResult) {
                 println("⚠️ Warning: Failed to save weekly tasks")
             }
 
-            println("✅ Complete plan saved: $goalId")
+            println("✅ Complete plan saved: $goalId with Week 1 tasks")
             goalId
 
         } catch (e: Exception) {
