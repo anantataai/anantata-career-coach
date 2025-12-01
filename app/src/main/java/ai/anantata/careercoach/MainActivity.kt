@@ -166,6 +166,9 @@ fun MainApp(
     onOnboardingComplete: () -> Unit,
     onFirstAssessmentComplete: () -> Unit
 ) {
+    // Репозиторії для GoalsListScreen
+    val supabaseRepo = remember { SupabaseRepository() }
+
     var showOnboarding by remember { mutableStateOf(!isOnboardingCompleted) }
     var showFirstAssessment by remember { mutableStateOf(!isFirstAssessmentCompleted && isOnboardingCompleted) }
     var showHistory by remember { mutableStateOf(false) }
@@ -268,11 +271,19 @@ fun MainApp(
         showGoalsList -> {
             GoalsListScreen(
                 userId = userId,
+                supabaseRepo = supabaseRepo,
                 onBack = {
                     showGoalsList = false
                     showDashboard = true
                 },
-                onGoalSelected = {
+                onAddNewGoal = {
+                    // Перехід на нову оцінку для створення нової цілі
+                    showGoalsList = false
+                    triggerNewAssessment = true
+                },
+                onGoalSelected = { goalId ->
+                    // Повернення на Dashboard (можна додати логіку зміни активної цілі)
+                    Log.d(TAG, "📁 Goal selected: $goalId")
                     showGoalsList = false
                     showDashboard = true
                 }
@@ -325,7 +336,6 @@ fun MainApp(
 
         else -> {
             LaunchedEffect(Unit) {
-                val supabaseRepo = SupabaseRepository()
                 val primaryGoal = supabaseRepo.getPrimaryGoal(userId)
                 Log.d(TAG, "📊 Primary goal check: ${primaryGoal?.title ?: "NULL"}")
                 if (primaryGoal != null) {
@@ -1257,31 +1267,3 @@ data class ChatMessage(
     val role: String,
     val content: String
 )
-
-// ════════════════════════════════════════════════════════════════
-// ЗАГЛУШКА для GoalsListScreen
-// ════════════════════════════════════════════════════════════════
-
-@Composable
-fun GoalsListScreen(
-    userId: String,
-    onBack: () -> Unit,
-    onGoalSelected: () -> Unit
-) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text("📁 Список цілей", fontSize = 24.sp)
-            Spacer(modifier = Modifier.height(16.dp))
-            Text("(Буде додано в наступній версії)")
-            Spacer(modifier = Modifier.height(24.dp))
-            Button(onClick = onBack) {
-                Text("← Назад")
-            }
-        }
-    }
-}
