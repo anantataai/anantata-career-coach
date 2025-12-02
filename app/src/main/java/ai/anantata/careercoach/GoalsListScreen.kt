@@ -1,5 +1,6 @@
 package ai.anantata.careercoach
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,12 +17,21 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
+/**
+ * Екран списку цілей (v1.8.1)
+ * 🆕 v1.8.1: Виправлено shareGoal - повний текст
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GoalsListScreen(
@@ -29,9 +39,12 @@ fun GoalsListScreen(
     supabaseRepo: SupabaseRepository,
     onBack: () -> Unit,
     onAddNewGoal: () -> Unit,
-    onGoalSelected: (String) -> Unit // goalId
+    onGoalSelected: (String) -> Unit,
+    onViewGoalResults: (String) -> Unit = {},
+    onDiscussGoal: (String) -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     var goals by remember { mutableStateOf<List<GoalItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
@@ -42,15 +55,37 @@ fun GoalsListScreen(
     // Завантажити цілі при першому відкритті
     LaunchedEffect(Unit) {
         isLoading = true
-        goals = supabaseRepo.getGoals(userId)
+        val loadedGoals = supabaseRepo.getGoals(userId)
+        // 🆕 v1.8: Сортування — головна ціль завжди зверху
+        goals = loadedGoals.sortedByDescending { it.isPrimary }
         isLoading = false
     }
 
     // Функція оновлення списку
     fun refreshGoals() {
         scope.launch {
-            goals = supabaseRepo.getGoals(userId)
+            val loadedGoals = supabaseRepo.getGoals(userId)
+            goals = loadedGoals.sortedByDescending { it.isPrimary }
         }
+    }
+
+    // 🆕 v1.8.1: Виправлена функція поділитися — повний текст
+    fun shareGoal(goal: GoalItem) {
+        val shareText = "🎯 Моя кар'єрна ціль:\n\n" +
+                "\"${goal.title}\"\n\n" +
+                "💰 Цільова зарплата: ${goal.targetSalary}\n\n" +
+                "📋 Отримав персональний план з 10 кроків до своєї мети!\n\n" +
+                "📱 Завантажуй Anantata Career Coach:\n" +
+                "https://play.google.com/store/apps/details?id=ai.anantata.careercoach"
+
+        val sendIntent = Intent().apply {
+            action = Intent.ACTION_SEND
+            putExtra(Intent.EXTRA_TEXT, shareText)
+            type = "text/plain"
+        }
+
+        val shareIntent = Intent.createChooser(sendIntent, "Поділитися ціллю")
+        context.startActivity(shareIntent)
     }
 
     Scaffold(
@@ -84,14 +119,12 @@ fun GoalsListScreen(
         ) {
             when {
                 isLoading -> {
-                    // Завантаження
                     CircularProgressIndicator(
                         modifier = Modifier.align(Alignment.Center)
                     )
                 }
 
                 goals.isEmpty() -> {
-                    // Немає цілей
                     NoGoalsContent(
                         onAddGoal = onAddNewGoal,
                         modifier = Modifier.align(Alignment.Center)
@@ -99,7 +132,6 @@ fun GoalsListScreen(
                 }
 
                 else -> {
-                    // Список цілей
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxSize()
@@ -107,7 +139,7 @@ fun GoalsListScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         items(goals) { goal ->
-                            GoalListItemCard(
+                            GoalListItemCardV2(
                                 goal = goal,
                                 isSettingPrimary = isSettingPrimary,
                                 onSetPrimary = {
@@ -121,13 +153,21 @@ fun GoalsListScreen(
                                 onDelete = {
                                     showDeleteDialog = goal
                                 },
+                                onView = {
+                                    onViewGoalResults(goal.id)
+                                },
+                                onDiscuss = {
+                                    onDiscussGoal(goal.id)
+                                },
+                                onShare = {
+                                    shareGoal(goal)
+                                },
                                 onSelect = {
                                     onGoalSelected(goal.id)
                                 }
                             )
                         }
 
-                        // Кнопка додавання нової цілі (якщо менше 3)
                         if (goals.size < 3) {
                             item {
                                 AddNewGoalCard(
@@ -137,7 +177,6 @@ fun GoalsListScreen(
                             }
                         }
 
-                        // Відступ знизу
                         item {
                             Spacer(modifier = Modifier.height(80.dp))
                         }
@@ -228,12 +267,18 @@ fun GoalsListScreen(
     }
 }
 
+/**
+ * Картка цілі з усіма кнопками
+ */
 @Composable
-fun GoalListItemCard(
+fun GoalListItemCardV2(
     goal: GoalItem,
     isSettingPrimary: Boolean,
     onSetPrimary: () -> Unit,
     onDelete: () -> Unit,
+    onView: () -> Unit,
+    onDiscuss: () -> Unit,
+    onShare: () -> Unit,
     onSelect: () -> Unit
 ) {
     Card(
@@ -256,7 +301,7 @@ fun GoalListItemCard(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // Заголовок з іконкою зірки
+            // ЗАГОЛОВОК з іконкою зірки
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -270,7 +315,7 @@ fun GoalListItemCard(
                         Icon(
                             imageVector = Icons.Filled.Star,
                             contentDescription = "Головна ціль",
-                            tint = Color(0xFFFFB300), // Золотий колір
+                            tint = Color(0xFFFFB300),
                             modifier = Modifier.size(24.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
@@ -285,30 +330,37 @@ fun GoalListItemCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             // Зарплата
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "💰",
-                    fontSize = 16.sp
-                )
-                Spacer(modifier = Modifier.width(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = "💰", fontSize = 16.sp)
+                Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = goal.targetSalary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Дата створення
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = "📅", fontSize = 16.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = formatGoalDate(goal.createdAt),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             // Статус
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = when(goal.status) {
                         "active" -> "🔄"
@@ -318,7 +370,7 @@ fun GoalListItemCard(
                     },
                     fontSize = 16.sp
                 )
-                Spacer(modifier = Modifier.width(4.dp))
+                Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = when(goal.status) {
                         "active" -> "Активна"
@@ -333,12 +385,37 @@ fun GoalListItemCard(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Кнопки дій
+            // Ряд 1: Переглянути | Обговорити
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Кнопка "Зробити головною" (якщо не головна)
+                OutlinedButton(
+                    onClick = onView,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("👁", fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = "Переглянути", fontSize = 13.sp)
+                }
+
+                OutlinedButton(
+                    onClick = onDiscuss,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("💬", fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = "Обговорити", fontSize = 13.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Ряд 2: Головна | Видалити
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 if (!goal.isPrimary) {
                     OutlinedButton(
                         onClick = onSetPrimary,
@@ -357,14 +434,10 @@ fun GoalListItemCard(
                                 modifier = Modifier.size(18.dp)
                             )
                         }
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Головна",
-                            fontSize = 12.sp
-                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = "Головна", fontSize = 13.sp)
                     }
                 } else {
-                    // Placeholder для головної цілі
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -375,19 +448,17 @@ fun GoalListItemCard(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Filled.Star,
                                 contentDescription = null,
                                 tint = Color(0xFFFFB300),
                                 modifier = Modifier.size(18.dp)
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = "Головна",
-                                fontSize = 12.sp,
+                                fontSize = 13.sp,
                                 color = Color(0xFFFFB300),
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -395,7 +466,6 @@ fun GoalListItemCard(
                     }
                 }
 
-                // Кнопка видалення
                 OutlinedButton(
                     onClick = onDelete,
                     modifier = Modifier.weight(1f),
@@ -408,17 +478,75 @@ fun GoalListItemCard(
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Видалити",
-                        fontSize = 12.sp
-                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = "Видалити", fontSize = 13.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Ряд 3: Поділитися
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                OutlinedButton(
+                    onClick = onShare,
+                    modifier = Modifier.fillMaxWidth(0.6f)
+                ) {
+                    Text("📤", fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = "Поділитися", fontSize = 13.sp)
                 }
             }
         }
     }
 }
 
+/**
+ * Форматування дати з годинами та хвилинами
+ * Результат: "1 грудня 2025, 15:08"
+ */
+fun formatGoalDate(dateString: String?): String {
+    if (dateString.isNullOrBlank()) return "Дата невідома"
+
+    return try {
+        val inputFormats = listOf(
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSS", Locale("uk")),
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale("uk")),
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale("uk")),
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale("uk")),
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale("uk")),
+            SimpleDateFormat("yyyy-MM-dd", Locale("uk"))
+        )
+
+        var parsedDate: Date? = null
+        for (format in inputFormats) {
+            try {
+                format.timeZone = TimeZone.getTimeZone("UTC")
+                format.isLenient = false
+                parsedDate = format.parse(dateString)
+                if (parsedDate != null) break
+            } catch (e: Exception) {
+                // Пробуємо наступний формат
+            }
+        }
+
+        if (parsedDate != null) {
+            val outputFormat = SimpleDateFormat("d MMMM yyyy, HH:mm", Locale("uk"))
+            outputFormat.timeZone = TimeZone.getDefault()
+            outputFormat.format(parsedDate)
+        } else {
+            dateString.take(10)
+        }
+    } catch (e: Exception) {
+        dateString.take(10)
+    }
+}
+
+/**
+ * Картка додавання нової цілі
+ */
 @Composable
 fun AddNewGoalCard(
     availableSlots: Int,
@@ -465,6 +593,9 @@ fun AddNewGoalCard(
     }
 }
 
+/**
+ * Контент коли немає цілей
+ */
 @Composable
 fun NoGoalsContent(
     onAddGoal: () -> Unit,
@@ -474,10 +605,7 @@ fun NoGoalsContent(
         modifier = modifier.padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = "🎯",
-            fontSize = 64.sp
-        )
+        Text(text = "🎯", fontSize = 64.sp)
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -503,12 +631,30 @@ fun NoGoalsContent(
             onClick = onAddGoal,
             modifier = Modifier.fillMaxWidth(0.7f)
         ) {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = null
-            )
+            Icon(imageVector = Icons.Default.Add, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
             Text("Пройти оцінку")
         }
     }
+}
+
+// Стара версія для зворотної сумісності
+@Composable
+fun GoalListItemCard(
+    goal: GoalItem,
+    isSettingPrimary: Boolean,
+    onSetPrimary: () -> Unit,
+    onDelete: () -> Unit,
+    onSelect: () -> Unit
+) {
+    GoalListItemCardV2(
+        goal = goal,
+        isSettingPrimary = isSettingPrimary,
+        onSetPrimary = onSetPrimary,
+        onDelete = onDelete,
+        onView = onSelect,
+        onDiscuss = {},
+        onShare = {},
+        onSelect = onSelect
+    )
 }

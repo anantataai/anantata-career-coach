@@ -1,6 +1,10 @@
 package ai.anantata.careercoach
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -24,11 +29,9 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -36,6 +39,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -45,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,8 +57,12 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
 /**
- * Головний екран з ціллю та тижневими завданнями (v1.5)
- * 🆕 Додано навігацію по тижнях
+ * Головний екран з ціллю та прогресом (v2.0)
+ *
+ * 🆕 v2.0: НОВА СТРУКТУРА
+ * - БЛОК = 100 кроків (10 напрямків × 10 кроків)
+ * - Без прив'язки до часу — працюй у своєму темпі
+ * - Після 100 кроків → генерується новий блок
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,7 +71,6 @@ fun GoalDashboardScreen(
     onOpenChat: () -> Unit,
     onOpenStrategy: () -> Unit,
     onOpenGoalsList: () -> Unit,
-    onOpenHistory: () -> Unit,
     onStartNewAssessment: () -> Unit
 ) {
     val supabaseRepo = remember { SupabaseRepository() }
@@ -71,41 +79,48 @@ fun GoalDashboardScreen(
 
     // Стани
     var primaryGoal by remember { mutableStateOf<GoalItem?>(null) }
-    var strategicSteps by remember { mutableStateOf<List<StrategicStepItem>>(emptyList()) }
-    var weeklyTasks by remember { mutableStateOf<List<WeeklyTaskItem>>(emptyList()) }
-    var currentWeek by remember { mutableStateOf(1) }
-    var weekStats by remember { mutableStateOf(WeekStats(0, 0, 0, 0)) }
     var isLoading by remember { mutableStateOf(true) }
-    var showWeekCompleteDialog by remember { mutableStateOf(false) }
-    var isGeneratingNextWeek by remember { mutableStateOf(false) }
+    var showGenerateBlockDialog by remember { mutableStateOf(false) }
+    var isGeneratingNextBlock by remember { mutableStateOf(false) }
+    var showNeedCompleteDialog by remember { mutableStateOf(false) } // 🆕 Діалог "треба виконати 100 кроків"
 
-    // 🆕 Нові стани для навігації по тижнях
-    var viewingWeek by remember { mutableStateOf(1) }  // Який тиждень переглядаємо
-    var maxWeek by remember { mutableStateOf(1) }      // Скільки всього тижнів є
+    // 🆕 v2.0: Блоки та напрямки
+    var currentBlock by remember { mutableStateOf(1) }
+    var maxBlock by remember { mutableStateOf(1) }
+    var directionsWithSteps by remember { mutableStateOf<List<DirectionWithSteps>>(emptyList()) }
+    var blockStats by remember { mutableStateOf<BlockStats?>(null) }
 
-    // Завантажуємо дані при відкритті
+    // Прогрес цілі
+    var goalProgress by remember { mutableStateOf<GoalProgress?>(null) }
+
+    // Стан розгорнутих напрямків
+    val expandedDirections = remember { mutableStateListOf<String>() }
+
+    // Стан розгорнутих кроків (для детального опису)
+    val expandedSteps = remember { mutableStateListOf<String>() }
+
+    // Стан генерації детального опису
+    var generatingDescriptionForStep by remember { mutableStateOf<String?>(null) }
+
+    // Завантажуємо дані
     LaunchedEffect(Unit) {
         isLoading = true
         try {
-            // Отримуємо головну ціль
             primaryGoal = supabaseRepo.getPrimaryGoal(userId)
 
             primaryGoal?.let { goal ->
-                // Отримуємо стратегічні кроки
-                strategicSteps = supabaseRepo.getStrategicSteps(goal.id)
+                maxBlock = supabaseRepo.getMaxBlockNumber(goal.id).coerceAtLeast(1)
+                currentBlock = maxBlock
 
-                // 🆕 Отримуємо максимальний номер тижня
-                maxWeek = supabaseRepo.getMaxWeekNumber(goal.id).coerceAtLeast(1)
+                directionsWithSteps = supabaseRepo.getDirectionsWithSteps(goal.id, currentBlock)
+                blockStats = supabaseRepo.getBlockStats(goal.id, currentBlock)
+                goalProgress = supabaseRepo.calculateGoalProgress(goal.id)
 
-                // Поточний тиждень = останній (найновіший)
-                currentWeek = maxWeek
-                viewingWeek = maxWeek
-
-                // Отримуємо завдання поточного тижня
-                weeklyTasks = supabaseRepo.getWeeklyTasks(goal.id, viewingWeek)
-
-                // Отримуємо статистику
-                weekStats = supabaseRepo.getWeekStats(goal.id, viewingWeek)
+                // Розгортаємо перший напрямок з невиконаними кроками
+                expandedDirections.clear()
+                directionsWithSteps
+                    .firstOrNull { it.pendingCount > 0 }
+                    ?.let { expandedDirections.add(it.direction.id) }
             }
         } catch (e: Exception) {
             println("❌ Error loading dashboard: ${e.message}")
@@ -114,77 +129,108 @@ fun GoalDashboardScreen(
         }
     }
 
-    // 🆕 Функція завантаження тижня (при навігації)
-    fun loadWeek(weekNumber: Int) {
+    // Функція завантаження блоку
+    fun loadBlock(blockNumber: Int) {
         scope.launch {
             primaryGoal?.let { goal ->
-                viewingWeek = weekNumber
-                weeklyTasks = supabaseRepo.getWeeklyTasks(goal.id, weekNumber)
-                weekStats = supabaseRepo.getWeekStats(goal.id, weekNumber)
+                currentBlock = blockNumber
+                directionsWithSteps = supabaseRepo.getDirectionsWithSteps(goal.id, blockNumber)
+                blockStats = supabaseRepo.getBlockStats(goal.id, blockNumber)
+
+                // Розгортаємо перший напрямок з невиконаними кроками
+                expandedDirections.clear()
+                directionsWithSteps
+                    .firstOrNull { it.pendingCount > 0 }
+                    ?.let { expandedDirections.add(it.direction.id) }
             }
         }
     }
 
-    // Функція оновлення статусу завдання
-    fun updateTaskStatus(task: WeeklyTaskItem, newStatus: String) {
+    // Функція оновлення статусу кроку
+    fun updateStepStatus(step: StepItem, newStatus: String) {
         scope.launch {
-            val success = supabaseRepo.updateTaskStatus(task.id, newStatus)
+            val success = supabaseRepo.updateStepStatus(step.id, newStatus)
             if (success) {
-                // Оновлюємо локальний список
-                weeklyTasks = weeklyTasks.map {
-                    if (it.id == task.id) it.copy(status = newStatus) else it
-                }
-
-                // Оновлюємо статистику
                 primaryGoal?.let { goal ->
-                    weekStats = supabaseRepo.getWeekStats(goal.id, viewingWeek)
-
-                    // Перевіряємо чи завершено тиждень (тільки якщо це поточний тиждень)
-                    if (viewingWeek == maxWeek && weekStats.isComplete) {
-                        showWeekCompleteDialog = true
-                    }
+                    // Оновлюємо дані
+                    directionsWithSteps = supabaseRepo.getDirectionsWithSteps(goal.id, currentBlock)
+                    blockStats = supabaseRepo.getBlockStats(goal.id, currentBlock)
+                    goalProgress = supabaseRepo.calculateGoalProgress(goal.id)
                 }
             }
         }
     }
 
-    // Функція генерації наступного тижня
-    fun generateNextWeek() {
+    // Функція генерації детального опису кроку
+    fun generateStepDescription(step: StepItem, directionTitle: String) {
         scope.launch {
-            isGeneratingNextWeek = true
-            showWeekCompleteDialog = false
+            generatingDescriptionForStep = step.id
 
             try {
                 primaryGoal?.let { goal ->
-                    val completedTasks = weeklyTasks.filter { it.status == "done" }
-                    val skippedTasks = weeklyTasks.filter { it.status == "skipped" }
-
-                    // Генеруємо нові завдання
-                    val newTasks = geminiRepo.generateNextWeekTasks(
-                        goalTitle = goal.title,
-                        targetSalary = goal.targetSalary,
-                        strategicSteps = strategicSteps,
-                        completedTasks = completedTasks,
-                        skippedTasks = skippedTasks,
-                        currentWeek = maxWeek + 1
+                    val detailedDescription = geminiRepo.generateStepDetails(
+                        stepTitle = step.title,
+                        stepDescription = step.description,
+                        directionTitle = directionTitle,
+                        goalTitle = goal.title
                     )
 
-                    // Зберігаємо в базу
-                    val saved = supabaseRepo.saveWeeklyTasks(goal.id, maxWeek + 1, newTasks)
+                    // Зберігаємо в БД
+                    supabaseRepo.updateStepDetailedDescription(step.id, detailedDescription)
 
-                    if (saved) {
-                        // 🆕 Оновлюємо maxWeek і переходимо на новий тиждень
-                        maxWeek += 1
-                        currentWeek = maxWeek
-                        viewingWeek = maxWeek
-                        weeklyTasks = supabaseRepo.getWeeklyTasks(goal.id, viewingWeek)
-                        weekStats = supabaseRepo.getWeekStats(goal.id, viewingWeek)
+                    // Оновлюємо локально
+                    directionsWithSteps = directionsWithSteps.map { dws ->
+                        dws.copy(
+                            steps = dws.steps.map { s ->
+                                if (s.id == step.id) {
+                                    s.copy(detailedDescription = detailedDescription)
+                                } else s
+                            }
+                        )
                     }
                 }
             } catch (e: Exception) {
-                println("❌ Error generating next week: ${e.message}")
+                println("❌ Error generating step description: ${e.message}")
             } finally {
-                isGeneratingNextWeek = false
+                generatingDescriptionForStep = null
+            }
+        }
+    }
+
+    // Функція генерації наступного блоку
+    fun generateNextBlock() {
+        scope.launch {
+            isGeneratingNextBlock = true
+            showGenerateBlockDialog = false
+
+            try {
+                primaryGoal?.let { goal ->
+                    val directions = directionsWithSteps.map { it.direction }
+                    val allSteps = directionsWithSteps.flatMap { it.steps }
+                    val completedSteps = allSteps.filter { it.status == "done" }
+                    val skippedSteps = allSteps.filter { it.status == "skipped" }
+
+                    val newPlan = geminiRepo.generateNextBlock(
+                        goalTitle = goal.title,
+                        targetSalary = goal.targetSalary,
+                        previousDirections = directions,
+                        completedSteps = completedSteps,
+                        skippedSteps = skippedSteps,
+                        blockNumber = maxBlock + 1
+                    )
+
+                    val saved = supabaseRepo.saveNextBlock(goal.id, newPlan, maxBlock + 1)
+
+                    if (saved) {
+                        maxBlock += 1
+                        loadBlock(maxBlock)
+                        goalProgress = supabaseRepo.calculateGoalProgress(goal.id)
+                    }
+                }
+            } catch (e: Exception) {
+                println("❌ Error generating next block: ${e.message}")
+            } finally {
+                isGeneratingNextBlock = false
             }
         }
     }
@@ -195,11 +241,8 @@ fun GoalDashboardScreen(
             TopAppBar(
                 title = { Text("Мій прогрес") },
                 actions = {
-                    IconButton(onClick = onOpenHistory) {
-                        Text("📋", fontSize = 20.sp)
-                    }
                     IconButton(onClick = onOpenGoalsList) {
-                        Text("📁", fontSize = 20.sp)
+                        Text("📋", fontSize = 20.sp)
                     }
                 }
             )
@@ -215,7 +258,6 @@ fun GoalDashboardScreen(
     ) { paddingValues ->
 
         if (isLoading) {
-            // Лоадер
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -225,96 +267,119 @@ fun GoalDashboardScreen(
                 CircularProgressIndicator()
             }
         } else if (primaryGoal == null) {
-            // Немає цілі — пропонуємо створити
             NoGoalScreen(
                 onStartAssessment = onStartNewAssessment,
                 modifier = Modifier.padding(paddingValues)
             )
         } else {
-            // Головний контент
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues),
                 contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // Картка цілі
                 item {
-                    GoalCard(
+                    GoalCardSimplified(
                         goal = primaryGoal!!,
-                        onOpenStrategy = onOpenStrategy
+                        progress = goalProgress
                     )
                 }
 
-                // 🆕 Заголовок тижня з НАВІГАЦІЄЮ
+                // 🆕 v2.0: Навігація по блоках
                 item {
-                    WeekHeaderWithNavigation(
-                        viewingWeek = viewingWeek,
-                        maxWeek = maxWeek,
-                        stats = weekStats,
-                        isCurrentWeek = viewingWeek == maxWeek,
-                        onPreviousWeek = {
-                            if (viewingWeek > 1) {
-                                loadWeek(viewingWeek - 1)
-                            }
+                    BlockNavigationHeader(
+                        currentBlock = currentBlock,
+                        maxBlock = maxBlock,
+                        blockStats = blockStats,
+                        onPreviousBlock = {
+                            if (currentBlock > 1) loadBlock(currentBlock - 1)
                         },
-                        onNextWeek = {
-                            if (viewingWeek < maxWeek) {
-                                loadWeek(viewingWeek + 1)
-                            }
+                        onNextBlock = {
+                            if (currentBlock < maxBlock) loadBlock(currentBlock + 1)
                         }
                     )
                 }
 
-                // Список завдань
-                if (weeklyTasks.isEmpty()) {
+                // Заголовок "10 напрямків, 100 кроків"
+                item {
+                    Text(
+                        text = "10 НАПРЯМКІВ, 100 КРОКІВ ДО МЕТИ!",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+
+                // 🆕 v2.0: Список напрямків
+                if (directionsWithSteps.isEmpty()) {
                     item {
-                        EmptyTasksCard()
+                        EmptyBlockCard()
                     }
                 } else {
-                    items(weeklyTasks) { task ->
-                        TaskItemCard(
-                            task = task,
-                            onStatusChange = { newStatus ->
-                                // 🆕 Дозволяємо змінювати статус тільки на поточному тижні
-                                if (viewingWeek == maxWeek) {
-                                    updateTaskStatus(task, newStatus)
+                    items(directionsWithSteps) { directionWithSteps ->
+                        val isExpanded = expandedDirections.contains(directionWithSteps.direction.id)
+
+                        DirectionCard(
+                            directionWithSteps = directionWithSteps,
+                            isExpanded = isExpanded,
+                            expandedSteps = expandedSteps,
+                            generatingDescriptionForStep = generatingDescriptionForStep,
+                            isCurrentBlock = currentBlock == maxBlock,
+                            onToggleExpand = {
+                                if (isExpanded) {
+                                    expandedDirections.remove(directionWithSteps.direction.id)
+                                } else {
+                                    expandedDirections.add(directionWithSteps.direction.id)
                                 }
                             },
-                            // 🆕 Вимикаємо редагування для історичних тижнів
-                            isEditable = viewingWeek == maxWeek
+                            onToggleStepExpand = { stepId ->
+                                if (expandedSteps.contains(stepId)) {
+                                    expandedSteps.remove(stepId)
+                                } else {
+                                    expandedSteps.add(stepId)
+                                    // Генеруємо опис якщо його немає
+                                    val step = directionWithSteps.steps.find { it.id == stepId }
+                                    if (step != null && step.detailedDescription.isNullOrBlank()) {
+                                        generateStepDescription(step, directionWithSteps.direction.title)
+                                    }
+                                }
+                            },
+                            onStepStatusChange = { step, newStatus ->
+                                updateStepStatus(step, newStatus)
+                            }
                         )
                     }
                 }
 
-                // 🆕 Підказка якщо дивимось історію
-                if (viewingWeek < maxWeek) {
+                // 🆕 v2.0: Кнопка генерації наступного блоку
+                if (currentBlock == maxBlock && !isGeneratingNextBlock) {
                     item {
-                        HistoryHintCard(
-                            weekNumber = viewingWeek,
-                            onGoToCurrentWeek = { loadWeek(maxWeek) }
-                        )
-                    }
-                }
-
-                // Кнопка генерації наступного тижня (тільки на поточному тижні)
-                if (viewingWeek == maxWeek && weekStats.isComplete && !isGeneratingNextWeek) {
-                    item {
-                        GenerateNextWeekButton(
-                            onClick = { showWeekCompleteDialog = true }
+                        GenerateNextBlockButton(
+                            blockNumber = currentBlock,
+                            isBlockComplete = blockStats?.isComplete == true,
+                            onClick = {
+                                // 🆕 Перевірка: чи виконано всі 100 кроків
+                                if (blockStats?.isComplete == true) {
+                                    showGenerateBlockDialog = true
+                                } else {
+                                    showNeedCompleteDialog = true
+                                }
+                            }
                         )
                     }
                 }
 
                 // Індикатор генерації
-                if (isGeneratingNextWeek) {
+                if (isGeneratingNextBlock) {
                     item {
-                        GeneratingWeekIndicator()
+                        GeneratingBlockIndicator()
                     }
                 }
 
-                // Відступ знизу для FAB
+                // Відступ знизу
                 item {
                     Spacer(modifier = Modifier.height(80.dp))
                 }
@@ -322,193 +387,707 @@ fun GoalDashboardScreen(
         }
     }
 
-    // Діалог завершення тижня
-    if (showWeekCompleteDialog) {
-        WeekCompleteDialog(
-            weekNumber = viewingWeek,
-            stats = weekStats,
-            onDismiss = { showWeekCompleteDialog = false },
-            onGenerateNext = { generateNextWeek() },
+    // Діалог генерації нового блоку
+    if (showGenerateBlockDialog) {
+        GenerateBlockDialog(
+            currentBlock = currentBlock,
+            blockStats = blockStats,
+            onDismiss = { showGenerateBlockDialog = false },
+            onGenerateNext = { generateNextBlock() },
             onDiscussWithCoach = {
-                showWeekCompleteDialog = false
+                showGenerateBlockDialog = false
                 onOpenChat()
             }
         )
     }
-}
 
-/**
- * 🆕 Заголовок тижня з кнопками навігації ← →
- */
-@Composable
-fun WeekHeaderWithNavigation(
-    viewingWeek: Int,
-    maxWeek: Int,
-    stats: WeekStats,
-    isCurrentWeek: Boolean,
-    onPreviousWeek: () -> Unit,
-    onNextWeek: () -> Unit
-) {
-    Column {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Кнопка "Попередній тиждень"
-            IconButton(
-                onClick = onPreviousWeek,
-                enabled = viewingWeek > 1
-            ) {
+    // 🆕 Діалог "треба виконати 100 кроків"
+    if (showNeedCompleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showNeedCompleteDialog = false },
+            icon = { Text(text = "🎯", fontSize = 48.sp) },
+            title = {
                 Text(
-                    text = "◀",
-                    fontSize = 20.sp,
-                    color = if (viewingWeek > 1)
-                        MaterialTheme.colorScheme.primary
-                    else
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                    text = "Спочатку завершіть Блок ${currentBlock}",
+                    textAlign = TextAlign.Center
                 )
-            }
-
-            // Заголовок тижня
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "📅 Тиждень $viewingWeek",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    // Позначка "поточний" або "історія"
-                    if (isCurrentWeek) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "⬤",
-                            fontSize = 10.sp,
-                            color = Color(0xFF4CAF50) // Зелений
-                        )
-                    }
-                }
-
-                // Показуємо скільки всього тижнів
-                if (maxWeek > 1) {
-                    Text(
-                        text = "з $maxWeek",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            // Кнопка "Наступний тиждень"
-            IconButton(
-                onClick = onNextWeek,
-                enabled = viewingWeek < maxWeek
-            ) {
-                Text(
-                    text = "▶",
-                    fontSize = 20.sp,
-                    color = if (viewingWeek < maxWeek)
-                        MaterialTheme.colorScheme.primary
-                    else
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Статистика
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = "Виконано: ${stats.done}/${stats.total}",
-                fontSize = 14.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Прогрес-бар
-        LinearProgressIndicator(
-            progress = { stats.progressPercent / 100f },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(8.dp)
-                .clip(RoundedCornerShape(4.dp)),
-            color = when {
-                stats.progressPercent >= 80 -> Color(0xFF4CAF50) // Зелений
-                stats.progressPercent >= 50 -> Color(0xFFFFC107) // Жовтий
-                else -> MaterialTheme.colorScheme.primary
             },
-            trackColor = MaterialTheme.colorScheme.surfaceVariant
-        )
+            text = {
+                Column {
+                    val done = blockStats?.done ?: 0
+                    val remaining = 100 - done
 
-        if (stats.skipped > 0) {
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "⏭️ Пропущено: ${stats.skipped}",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-            )
-        }
+                    Text(
+                        text = "Вам потрібно виконати ще $remaining кроків з 100, щоб розблокувати Блок ${currentBlock + 1}.",
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Прогрес
+                    LinearProgressIndicator(
+                        progress = { done.toFloat() / 100f },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(12.dp)
+                            .clip(RoundedCornerShape(6.dp)),
+                        color = Color(0xFF4CAF50),
+                        trackColor = Color(0xFFE0E0E0)
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Прогрес: $done/100 (${done}%)",
+                        fontSize = 14.sp,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showNeedCompleteDialog = false }) {
+                    Text("Зрозуміло! 💪")
+                }
+            }
+        )
     }
 }
 
-/**
- * 🆕 Підказка при перегляді історії
- */
+// ════════════════════════════════════════════════════════════════
+// 🆕 v2.0: НАВІГАЦІЯ ПО БЛОКАХ
+// ════════════════════════════════════════════════════════════════
+
 @Composable
-fun HistoryHintCard(
-    weekNumber: Int,
-    onGoToCurrentWeek: () -> Unit
+fun BlockNavigationHeader(
+    currentBlock: Int,
+    maxBlock: Int,
+    blockStats: BlockStats?,
+    onPreviousBlock: () -> Unit,
+    onNextBlock: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
+            containerColor = Color(0xFFFFF8E1) // 🆕 Яскравий жовтуватий замість сірого
         )
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(12.dp)
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "📜 Це історія",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = "Ви переглядаєте Тиждень $weekNumber. Завдання не можна змінювати.",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            // Навігація
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Кнопка "Попередній"
+                IconButton(
+                    onClick = onPreviousBlock,
+                    enabled = currentBlock > 1,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Text(
+                        text = "◀",
+                        fontSize = 20.sp,
+                        color = if (currentBlock > 1)
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                    )
+                }
+
+                // БЛОК X
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "БЛОК $currentBlock",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (blockStats != null) {
+                        Text(
+                            text = "Виконано: ${blockStats.done}/100",
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // Кнопка "Наступний"
+                IconButton(
+                    onClick = onNextBlock,
+                    enabled = currentBlock < maxBlock,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Text(
+                        text = "▶",
+                        fontSize = 20.sp,
+                        color = if (currentBlock < maxBlock)
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                    )
+                }
             }
 
-            TextButton(onClick = onGoToCurrentWeek) {
-                Text("До поточного →")
+            // Прогрес-бар блоку
+            if (blockStats != null && blockStats.total > 0) {
+                Spacer(modifier = Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { blockStats.done.toFloat() / blockStats.total },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    color = when {
+                        blockStats.progressPercent >= 100 -> Color(0xFF4CAF50)
+                        blockStats.progressPercent >= 50 -> Color(0xFFFFC107)
+                        else -> MaterialTheme.colorScheme.primary
+                    },
+                    trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+                )
             }
         }
     }
 }
 
-/**
- * Екран коли немає цілі
- */
+// ════════════════════════════════════════════════════════════════
+// 🆕 v2.0: КАРТКА НАПРЯМКУ
+// ════════════════════════════════════════════════════════════════
+
+@Composable
+fun DirectionCard(
+    directionWithSteps: DirectionWithSteps,
+    isExpanded: Boolean,
+    expandedSteps: List<String>,
+    generatingDescriptionForStep: String?,
+    isCurrentBlock: Boolean,
+    onToggleExpand: () -> Unit,
+    onToggleStepExpand: (String) -> Unit,
+    onStepStatusChange: (StepItem, String) -> Unit
+) {
+    val direction = directionWithSteps.direction
+    val steps = directionWithSteps.steps
+    val doneCount = directionWithSteps.doneCount
+    val totalCount = directionWithSteps.totalCount
+
+    val isComplete = doneCount == 10
+    val hasProgress = doneCount > 0
+
+    val cardColor = when {
+        isComplete -> Color(0xFF4CAF50).copy(alpha = 0.15f) // Зелений для завершених
+        hasProgress -> Color(0xFFFFF3E0) // 🆕 Яскравий помаранчевий для в прогресі
+        else -> Color(0xFFFAFAFA) // 🆕 Світлий білий замість сірого
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = cardColor),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = if (hasProgress) 4.dp else 1.dp
+        )
+    ) {
+        Column {
+            // ═══════════════════════════════════════════════════════
+            // ЗАГОЛОВОК НАПРЯМКУ
+            // ═══════════════════════════════════════════════════════
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onToggleExpand() }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Номер напрямку
+                DirectionNumberBadge(
+                    number = direction.directionNumber,
+                    isComplete = isComplete,
+                    hasProgress = hasProgress
+                )
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                // Назва
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = direction.title,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                // Прогрес
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isComplete) {
+                        Text(text = "✅", fontSize = 18.sp)
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+                    Text(
+                        text = "$doneCount/$totalCount",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = when {
+                            isComplete -> Color(0xFF4CAF50)
+                            hasProgress -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Text(
+                    text = if (isExpanded) "▼" else "▶",
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // ═══════════════════════════════════════════════════════
+            // РОЗГОРНУТИЙ КОНТЕНТ — КРОКИ
+            // ═══════════════════════════════════════════════════════
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    steps.forEach { step ->
+                        val isStepExpanded = expandedSteps.contains(step.id)
+                        val isGenerating = generatingDescriptionForStep == step.id
+
+                        StepItemCard(
+                            step = step,
+                            isExpanded = isStepExpanded,
+                            isGeneratingDescription = isGenerating,
+                            isEditable = isCurrentBlock,
+                            onToggleExpand = { onToggleStepExpand(step.id) },
+                            onStatusChange = { newStatus ->
+                                onStepStatusChange(step, newStatus)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DirectionNumberBadge(
+    number: Int,
+    isComplete: Boolean,
+    hasProgress: Boolean
+) {
+    val backgroundColor = when {
+        isComplete -> Color(0xFF4CAF50)
+        hasProgress -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+    }
+
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .background(backgroundColor, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = number.toString(),
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// 🆕 v2.0: КАРТКА КРОКУ
+// ════════════════════════════════════════════════════════════════
+
+@Composable
+fun StepItemCard(
+    step: StepItem,
+    isExpanded: Boolean,
+    isGeneratingDescription: Boolean,
+    isEditable: Boolean,
+    onToggleExpand: () -> Unit,
+    onStatusChange: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = when (step.status) {
+                "done" -> Color(0xFFE8F5E9) // 🆕 Яскравий зелений
+                "skipped" -> Color(0xFFFFF8E1) // 🆕 Жовтуватий замість сірого
+                else -> Color.White // 🆕 Білий замість сірого
+            }
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp) // 🆕 Більша тінь
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            // Заголовок кроку
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Чекбокс
+                StepStatusButton(
+                    status = step.status,
+                    onToggle = {
+                        if (isEditable) {
+                            when (step.status) {
+                                "pending" -> onStatusChange("done")
+                                "done" -> onStatusChange("pending")
+                                "skipped" -> onStatusChange("pending")
+                            }
+                        }
+                    },
+                    isEnabled = isEditable
+                )
+
+                Spacer(modifier = Modifier.width(10.dp))
+
+                // Назва кроку (клікабельна для розгортання)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onToggleExpand() }
+                ) {
+                    Text(
+                        text = "${step.localNumber}. ${step.title}",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        textDecoration = if (step.status == "done") TextDecoration.LineThrough else null,
+                        color = if (step.status == "done" || step.status == "skipped")
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        else MaterialTheme.colorScheme.onSurface,
+                        maxLines = if (isExpanded) Int.MAX_VALUE else 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                // Кнопка пропустити
+                if (step.status == "pending" && isEditable) {
+                    IconButton(
+                        onClick = { onStatusChange("skipped") },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Text("⏭️", fontSize = 18.sp)
+                    }
+                }
+            }
+
+            // Розгорнутий детальний опис
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
+                ) {
+                    // Роздільник
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (isGeneratingDescription) {
+                        // Генерується опис
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = "Генерую детальний опис...",
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                            )
+                        }
+                    } else if (!step.detailedDescription.isNullOrBlank()) {
+                        // Показуємо детальний опис
+                        Text(
+                            text = "📝 Детальний опис:",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = step.detailedDescription,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            lineHeight = 20.sp
+                        )
+                    } else {
+                        // Короткий опис (fallback)
+                        Text(
+                            text = step.description,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 20.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun StepStatusButton(
+    status: String,
+    onToggle: () -> Unit,
+    isEnabled: Boolean = true
+) {
+    IconButton(
+        onClick = onToggle,
+        modifier = Modifier.size(36.dp),
+        enabled = isEnabled
+    ) {
+        Text(
+            text = when (status) {
+                "done" -> "✅"
+                "skipped" -> "⏭️"
+                else -> "🔲"
+            },
+            fontSize = 22.sp,
+            color = if (isEnabled) Color.Unspecified else Color.Unspecified.copy(alpha = 0.5f)
+        )
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// 🆕 v2.0: КНОПКА ГЕНЕРАЦІЇ НАСТУПНОГО БЛОКУ
+// ════════════════════════════════════════════════════════════════
+
+@Composable
+fun GenerateNextBlockButton(
+    blockNumber: Int,
+    isBlockComplete: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isBlockComplete)
+                MaterialTheme.colorScheme.primaryContainer
+            else
+                MaterialTheme.colorScheme.tertiaryContainer
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (isBlockComplete) "🎉" else "🚀",
+                fontSize = 24.sp
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = if (isBlockComplete)
+                    "Завершити блок → Генерувати Блок ${blockNumber + 1}"
+                else
+                    "Згенерувати Блок ${blockNumber + 1} →",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (isBlockComplete)
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                else
+                    MaterialTheme.colorScheme.onTertiaryContainer
+            )
+        }
+    }
+}
+
+@Composable
+fun GeneratingBlockIndicator() {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                strokeWidth = 2.dp
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = "Генерую новий блок (100 кроків)...",
+                fontSize = 16.sp
+            )
+        }
+    }
+}
+
+@Composable
+fun GenerateBlockDialog(
+    currentBlock: Int,
+    blockStats: BlockStats?,
+    onDismiss: () -> Unit,
+    onGenerateNext: () -> Unit,
+    onDiscussWithCoach: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Text(text = "🎉", fontSize = 48.sp) },
+        title = {
+            Text(
+                text = "Генерувати Блок ${currentBlock + 1}?",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column {
+                if (blockStats != null) {
+                    Text(text = "✅ Виконано: ${blockStats.done} кроків")
+                    if (blockStats.skipped > 0) {
+                        Text(text = "⏭️ Пропущено: ${blockStats.skipped}")
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "ШІ створить новий блок з 10 напрямків та 100 кроків на основі вашого прогресу",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onGenerateNext) {
+                Text("🚀 Генерувати")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDiscussWithCoach) {
+                Text("💬 Обговорити")
+            }
+        }
+    )
+}
+
+// ════════════════════════════════════════════════════════════════
+// EXISTING COMPONENTS (спрощені)
+// ════════════════════════════════════════════════════════════════
+
+@Composable
+fun GoalCardSimplified(
+    goal: GoalItem,
+    progress: GoalProgress?
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFF4A90D9) // 🆕 Яскравий синій
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "🎯 ${goal.title}",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White // 🆕 Білий текст
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "💰 ${goal.targetSalary}",
+                    fontSize = 15.sp,
+                    color = Color.White.copy(alpha = 0.9f) // 🆕 Білий текст
+                )
+
+                if (progress != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Прогрес: ",
+                            fontSize = 14.sp,
+                            color = Color.White.copy(alpha = 0.8f) // 🆕 Білий текст
+                        )
+                        Text(
+                            text = "${progress.overallPercent}%",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = when {
+                                progress.overallPercent >= 80 -> Color(0xFFAED581) // 🆕 Світло-зелений
+                                progress.overallPercent >= 50 -> Color(0xFFFFE082) // 🆕 Світло-жовтий
+                                else -> Color.White
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (progress != null) {
+                Spacer(modifier = Modifier.height(10.dp))
+                LinearProgressIndicator(
+                    progress = { progress.overallPercent / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    color = when {
+                        progress.overallPercent >= 80 -> Color(0xFF81C784) // 🆕 Зелений
+                        progress.overallPercent >= 50 -> Color(0xFFFFD54F) // 🆕 Жовтий
+                        else -> Color.White
+                    },
+                    trackColor = Color.White.copy(alpha = 0.3f) // 🆕 Білий трек
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun NoGoalScreen(
     onStartAssessment: () -> Unit,
@@ -528,30 +1107,21 @@ fun NoGoalScreen(
                 modifier = Modifier.padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(
-                    text = "🎯",
-                    fontSize = 64.sp
-                )
-
+                Text(text = "🎯", fontSize = 64.sp)
                 Spacer(modifier = Modifier.height(16.dp))
-
                 Text(
                     text = "Почни свій шлях!",
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold
                 )
-
                 Spacer(modifier = Modifier.height(8.dp))
-
                 Text(
-                    text = "Пройди оцінку щоб отримати персональний план з 10 кроків до твоєї мети",
+                    text = "Пройди оцінку щоб отримати персональний план: 10 напрямків, 100 кроків!",
                     fontSize = 16.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp)
+                    textAlign = TextAlign.Center
                 )
-
                 Spacer(modifier = Modifier.height(24.dp))
-
                 Button(
                     onClick = onStartAssessment,
                     modifier = Modifier.fillMaxWidth()
@@ -563,201 +1133,8 @@ fun NoGoalScreen(
     }
 }
 
-/**
- * Картка головної цілі
- */
 @Composable
-fun GoalCard(
-    goal: GoalItem,
-    onOpenStrategy: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "⭐",
-                    fontSize = 24.sp
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "ГОЛОВНА ЦІЛЬ",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Text(
-                text = goal.title,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "💰",
-                    fontSize = 18.sp
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = goal.targetSalary,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            OutlinedButton(
-                onClick = onOpenStrategy,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("📋 Переглянути стратегію")
-            }
-        }
-    }
-}
-
-/**
- * 🆕 Оновлений TaskItemCard з параметром isEditable
- */
-@Composable
-fun TaskItemCard(
-    task: WeeklyTaskItem,
-    onStatusChange: (String) -> Unit,
-    isEditable: Boolean = true  // 🆕 Новий параметр
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = when (task.status) {
-                "done" -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
-                "skipped" -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                else -> MaterialTheme.colorScheme.surface
-            }
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .clickable { expanded = !expanded }
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Чекбокс/статус (emoji замість іконок)
-                TaskStatusButton(
-                    status = task.status,
-                    onToggle = {
-                        if (isEditable) {  // 🆕 Перевірка
-                            when (task.status) {
-                                "pending" -> onStatusChange("done")
-                                "done" -> onStatusChange("pending")
-                                "skipped" -> onStatusChange("pending")
-                            }
-                        }
-                    },
-                    isEnabled = isEditable  // 🆕 Новий параметр
-                )
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                // Номер і назва
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "${task.taskNumber}. ${task.title}",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
-                        textDecoration = if (task.status == "done") TextDecoration.LineThrough else null,
-                        color = if (task.status == "done" || task.status == "skipped")
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                        else MaterialTheme.colorScheme.onSurface,
-                        maxLines = if (expanded) Int.MAX_VALUE else 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                // Кнопка "пропустити" (тільки якщо editable)
-                if (task.status == "pending" && isEditable) {
-                    IconButton(
-                        onClick = { onStatusChange("skipped") }
-                    ) {
-                        Text("⏭️", fontSize = 20.sp)
-                    }
-                }
-            }
-
-            // Опис (розгорнутий)
-            if (expanded && task.description.isNotBlank()) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = task.description,
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
-
-/**
- * 🆕 Оновлена кнопка статусу з параметром isEnabled
- */
-@Composable
-fun TaskStatusButton(
-    status: String,
-    onToggle: () -> Unit,
-    isEnabled: Boolean = true  // 🆕 Новий параметр
-) {
-    IconButton(
-        onClick = onToggle,
-        modifier = Modifier.size(40.dp),
-        enabled = isEnabled
-    ) {
-        Text(
-            text = when (status) {
-                "done" -> "✅"
-                "skipped" -> "⏭️"
-                else -> "🔲"
-            },
-            fontSize = 24.sp,
-            color = if (isEnabled)
-                Color.Unspecified
-            else
-                Color.Unspecified.copy(alpha = 0.5f)
-        )
-    }
-}
-
-/**
- * Пуста картка коли немає завдань
- */
-@Composable
-fun EmptyTasksCard() {
+fun EmptyBlockCard() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp)
@@ -768,13 +1145,10 @@ fun EmptyTasksCard() {
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = "📝",
-                fontSize = 48.sp
-            )
+            Text(text = "📝", fontSize = 48.sp)
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Завдання ще не згенеровані",
+                text = "Блок ще не згенеровано",
                 fontSize = 16.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -782,121 +1156,18 @@ fun EmptyTasksCard() {
     }
 }
 
-/**
- * Кнопка генерації наступного тижня
- */
+// ════════════════════════════════════════════════════════════════
+// DEPRECATED (для зворотної сумісності)
+// ════════════════════════════════════════════════════════════════
+
+@Deprecated("Use GoalCardSimplified")
 @Composable
-fun GenerateNextWeekButton(
-    onClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() },
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "🎉",
-                fontSize = 24.sp
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = "Тиждень завершено! Далі →",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onTertiaryContainer
-            )
-        }
-    }
+fun GoalCardWithProgress(goal: GoalItem, progress: GoalProgress?, onOpenStrategy: () -> Unit) {
+    GoalCardSimplified(goal = goal, progress = progress)
 }
 
-/**
- * Індикатор генерації тижня
- */
+@Deprecated("Use GoalCardSimplified")
 @Composable
-fun GeneratingWeekIndicator() {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(24.dp),
-                strokeWidth = 2.dp
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = "Генерую завдання на наступний тиждень...",
-                fontSize = 16.sp
-            )
-        }
-    }
-}
-
-/**
- * Діалог завершення тижня
- */
-@Composable
-fun WeekCompleteDialog(
-    weekNumber: Int,
-    stats: WeekStats,
-    onDismiss: () -> Unit,
-    onGenerateNext: () -> Unit,
-    onDiscussWithCoach: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Text(text = "🎉", fontSize = 48.sp)
-        },
-        title = {
-            Text(
-                text = "Тиждень $weekNumber завершено!",
-                fontWeight = FontWeight.Bold
-            )
-        },
-        text = {
-            Column {
-                Text(
-                    text = "✅ Виконано: ${stats.done}/10 завдань"
-                )
-                if (stats.skipped > 0) {
-                    Text(
-                        text = "⏭️ Пропущено: ${stats.skipped}"
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Готовий до наступного рівня?",
-                    fontWeight = FontWeight.Medium
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = onGenerateNext) {
-                Text("🚀 Тиждень ${weekNumber + 1}")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDiscussWithCoach) {
-                Text("💬 Обговорити")
-            }
-        }
-    )
+fun GoalCard(goal: GoalItem, onOpenStrategy: () -> Unit) {
+    GoalCardSimplified(goal = goal, progress = null)
 }

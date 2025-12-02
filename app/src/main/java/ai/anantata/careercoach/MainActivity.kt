@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -43,6 +44,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -56,6 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.anantata.careercoach.ui.theme.AnantataCoachTheme
@@ -151,13 +154,16 @@ fun generatePlanContext(
         appendLine("🎯 Твоя мета: $goalAnswer")
         appendLine("💰 Бажаний дохід: $salaryAnswer")
         appendLine()
-        appendLine("📋 Твій план з 10 кроків:")
+        appendLine("📋 Твій план з 10 напрямків:")
         appendLine(actionPlan)
         appendLine()
         appendLine("З чого ти готовий почати свій шлях до успіху? 🚀")
     }
 }
 
+/**
+ * v2.0: MainApp з підтримкою нової структури (блоки/напрямки/кроки)
+ */
 @Composable
 fun MainApp(
     userId: String,
@@ -166,14 +172,15 @@ fun MainApp(
     onOnboardingComplete: () -> Unit,
     onFirstAssessmentComplete: () -> Unit
 ) {
-    // Репозиторії для GoalsListScreen
+    // Репозиторії
     val supabaseRepo = remember { SupabaseRepository() }
+    val scope = rememberCoroutineScope()
 
     var showOnboarding by remember { mutableStateOf(!isOnboardingCompleted) }
     var showFirstAssessment by remember { mutableStateOf(!isFirstAssessmentCompleted && isOnboardingCompleted) }
     var showHistory by remember { mutableStateOf(false) }
 
-    // v1.5: Нові стани для навігації
+    // Навігаційні стани
     var showDashboard by remember { mutableStateOf(false) }
     var showChat by remember { mutableStateOf(false) }
     var showStrategy by remember { mutableStateOf(false) }
@@ -187,6 +194,46 @@ fun MainApp(
 
     // Стан для запуску нової оцінки
     var triggerNewAssessment by remember { mutableStateOf(false) }
+
+    // 🆕 v2.0: Стан для перегляду результатів конкретної цілі
+    var viewingGoalId by remember { mutableStateOf<String?>(null) }
+    var viewingGoalData by remember { mutableStateOf<GoalViewData?>(null) }
+    var isLoadingGoalData by remember { mutableStateOf(false) }
+
+    // 🆕 v2.0: Стан для обговорення конкретної цілі в чаті
+    var discussGoalId by remember { mutableStateOf<String?>(null) }
+
+    // 🆕 v2.0: Завантаження даних цілі для перегляду
+    LaunchedEffect(viewingGoalId) {
+        viewingGoalId?.let { goalId ->
+            isLoadingGoalData = true
+            try {
+                Log.d(TAG, "📊 Loading goal data for: $goalId")
+
+                // Завантажуємо ціль
+                val goal = supabaseRepo.getGoalById(goalId)
+
+                // 🆕 v2.0: Завантажуємо напрямки замість кроків
+                val directions = supabaseRepo.getDirections(goalId, blockNumber = 1)
+
+                if (goal != null) {
+                    viewingGoalData = GoalViewData(
+                        goal = goal,
+                        directions = directions
+                    )
+                    Log.d(TAG, "✅ Goal data loaded: ${goal.title}, ${directions.size} directions")
+                } else {
+                    Log.e(TAG, "❌ Goal not found: $goalId")
+                    viewingGoalId = null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error loading goal: ${e.message}")
+                viewingGoalId = null
+            } finally {
+                isLoadingGoalData = false
+            }
+        }
+    }
 
     when {
         showOnboarding -> {
@@ -208,6 +255,67 @@ fun MainApp(
                     showDashboard = true
                 }
             )
+        }
+
+        // 🆕 v2.0: Перегляд результатів конкретної цілі
+        viewingGoalId != null && viewingGoalData != null -> {
+            val data = viewingGoalData!!
+
+            // Створюємо ParsedAssessmentResult з даних цілі
+            val parsedResult = ParsedAssessmentResult(
+                matchScore = 75, // TODO: зберігати matchScore в goal
+                strengths = listOf("Мотивація до досягнення мети", "Готовність до змін"),
+                gaps = listOf("Потрібно розвинути навички"),
+                expectedSalary = data.goal.targetSalary,
+                timeToGoal = "6-12 місяців",
+                actionSteps = data.directions.map { direction ->
+                    ParsedActionStep(
+                        number = direction.directionNumber,
+                        title = direction.title,
+                        description = direction.description,
+                        timeEstimate = "Блок ${direction.blockNumber}",
+                        priority = if (direction.directionNumber <= 3) "Високий" else "Середній"
+                    )
+                }
+            )
+
+            AssessmentResultsScreen(
+                result = parsedResult,
+                isViewMode = true,
+                goalAnswer = data.goal.title,
+                salaryAnswer = data.goal.targetSalary,
+                onBackToChat = {
+                    viewingGoalId = null
+                    viewingGoalData = null
+                    showGoalsList = true
+                },
+                onRetakeAssessment = {
+                    viewingGoalId = null
+                    viewingGoalData = null
+                    triggerNewAssessment = true
+                },
+                onDiscussPlan = {
+                    // Переходимо в чат з контекстом цієї цілі
+                    discussGoalId = viewingGoalId
+                    viewingGoalId = null
+                    viewingGoalData = null
+                    showChat = true
+                }
+            )
+        }
+
+        // Завантаження даних цілі
+        viewingGoalId != null && isLoadingGoalData -> {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("Завантаження даних цілі...")
+                }
+            }
         }
 
         viewingHistoryItem != null -> {
@@ -282,10 +390,24 @@ fun MainApp(
                     triggerNewAssessment = true
                 },
                 onGoalSelected = { goalId ->
-                    // Повернення на Dashboard (можна додати логіку зміни активної цілі)
+                    // Клік на картку — перехід на стратегію (поточна поведінка)
                     Log.d(TAG, "📁 Goal selected: $goalId")
                     showGoalsList = false
                     showDashboard = true
+                },
+                // 🆕 v2.0: Нові callbacks
+                onViewGoalResults = { goalId ->
+                    // Перегляд GAP аналізу + 10 напрямків
+                    Log.d(TAG, "👁 View goal results: $goalId")
+                    showGoalsList = false
+                    viewingGoalId = goalId
+                },
+                onDiscussGoal = { goalId ->
+                    // Обговорити цю ціль в чаті
+                    Log.d(TAG, "💬 Discuss goal: $goalId")
+                    showGoalsList = false
+                    discussGoalId = goalId
+                    showChat = true
                 }
             )
         }
@@ -305,10 +427,6 @@ fun MainApp(
                     showDashboard = false
                     showGoalsList = true
                 },
-                onOpenHistory = {
-                    showDashboard = false
-                    showHistory = true
-                },
                 onStartNewAssessment = {
                     showDashboard = false
                     triggerNewAssessment = true
@@ -325,12 +443,21 @@ fun MainApp(
                 },
                 onBackToDashboard = {
                     showChat = false
+                    discussGoalId = null
                     showDashboard = true
+                },
+                onOpenGoalsList = {
+                    showChat = false
+                    discussGoalId = null
+                    showGoalsList = true
                 },
                 initialPlanContext = chatWithPlanContext,
                 onPlanContextConsumed = { chatWithPlanContext = null },
                 triggerAssessment = triggerNewAssessment,
-                onAssessmentTriggered = { triggerNewAssessment = false }
+                onAssessmentTriggered = { triggerNewAssessment = false },
+                // 🆕 v2.0: Передаємо goalId для контексту
+                discussGoalId = discussGoalId,
+                onDiscussGoalConsumed = { discussGoalId = null }
             )
         }
 
@@ -355,8 +482,16 @@ fun MainApp(
     }
 }
 
+/**
+ * 🆕 v2.0: Data class для перегляду цілі (з напрямками замість кроків)
+ */
+data class GoalViewData(
+    val goal: GoalItem,
+    val directions: List<DirectionItem>
+)
+
 // ════════════════════════════════════════════════════════════════
-// FIRST ASSESSMENT FLOW
+// FIRST ASSESSMENT FLOW (v2.0)
 // ════════════════════════════════════════════════════════════════
 
 @Composable
@@ -416,6 +551,12 @@ fun FirstAssessmentFlow(
                     text = "Аналізую ваш профіль...",
                     style = MaterialTheme.typography.titleMedium
                 )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Генерую 10 напрямків та 100 кроків",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     } else {
@@ -436,7 +577,7 @@ fun FirstAssessmentFlow(
                         Log.d(TAG, "🔄 Calling generateGoalWithPlan...")
                         val plan = geminiRepo.generateGoalWithPlan(answersMap, questions)
                         generatedPlan = plan
-                        Log.d(TAG, "✅ Plan generated: ${plan.goal.title}, ${plan.strategicSteps.size} steps, ${plan.weeklyTasks.size} tasks")
+                        Log.d(TAG, "✅ Plan generated: ${plan.goal.title}, ${plan.directions.size} directions, ${plan.steps.size} steps")
 
                         Log.d(TAG, "💾 AUTO-SAVING plan immediately...")
                         val goalId = supabaseRepo.saveCompletePlan(
@@ -465,20 +606,37 @@ fun FirstAssessmentFlow(
                             appendLine("ЧАС ДО МЕТИ: 6-12 місяців")
                         }
 
-                        savedActionPlan = plan.strategicSteps.joinToString("\n\n") { step ->
+                        // 🆕 v2.0: Використовуємо directions замість strategicSteps
+                        savedActionPlan = plan.directions.joinToString("\n\n") { direction ->
                             buildString {
-                                appendLine("КРОК ${step.number}: ${step.title}")
-                                appendLine(step.description)
-                                appendLine("⏰ Час: ${step.timeframe}")
-                                appendLine("🔥 Пріоритет: ${if (step.number <= 3) "Високий" else "Середній"}")
+                                appendLine("НАПРЯМОК ${direction.number}: ${direction.title}")
+                                appendLine(direction.description)
+                                appendLine("📋 Кроків: 10")
+                                appendLine("🔥 Пріоритет: ${if (direction.number <= 3) "Високий" else "Середній"}")
                             }
                         }
 
                         supabaseRepo.saveMessage(conversationId, "assistant", savedGapAnalysis)
                         supabaseRepo.saveMessage(conversationId, "assistant", savedActionPlan)
 
-                        assessmentResult = parseAssessmentResults(savedGapAnalysis, savedActionPlan)
-                        Log.d(TAG, "📊 Parsed result: matchScore=${assessmentResult?.matchScore}")
+                        // 🆕 v2.0: Створюємо ParsedAssessmentResult напряму з GeneratedPlan
+                        assessmentResult = ParsedAssessmentResult(
+                            matchScore = plan.matchScore,
+                            strengths = listOf("Мотивація до досягнення мети", "Готовність до змін"),
+                            gaps = listOf(plan.gapAnalysis),
+                            expectedSalary = plan.goal.targetSalary,
+                            timeToGoal = "6-12 місяців",
+                            actionSteps = plan.directions.map { direction ->
+                                ParsedActionStep(
+                                    number = direction.number,
+                                    title = direction.title,
+                                    description = direction.description,
+                                    timeEstimate = "Блок 1",
+                                    priority = if (direction.number <= 3) "Високий" else "Середній"
+                                )
+                            }
+                        )
+                        Log.d(TAG, "📊 Created result from plan: matchScore=${assessmentResult?.matchScore}, ${plan.directions.size} directions")
 
                         assessmentResult?.let { result ->
                             supabaseRepo.saveAssessmentResult(
@@ -507,7 +665,7 @@ fun FirstAssessmentFlow(
 }
 
 // ════════════════════════════════════════════════════════════════
-// CHAT SCREEN — v1.5 з історією чату та контекстом для ШІ
+// CHAT SCREEN — v2.0 з підтримкою directions/steps
 // ════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -516,10 +674,14 @@ fun ChatScreen(
     userId: String,
     onOpenHistory: () -> Unit,
     onBackToDashboard: () -> Unit = {},
+    onOpenGoalsList: () -> Unit = {},
     initialPlanContext: AssessmentHistoryItem? = null,
     onPlanContextConsumed: () -> Unit = {},
     triggerAssessment: Boolean = false,
-    onAssessmentTriggered: () -> Unit = {}
+    onAssessmentTriggered: () -> Unit = {},
+    // 🆕 v2.0: Нові параметри для обговорення конкретної цілі
+    discussGoalId: String? = null,
+    onDiscussGoalConsumed: () -> Unit = {}
 ) {
     val geminiRepo = remember { GeminiRepository() }
     val supabaseRepo = remember { SupabaseRepository() }
@@ -535,17 +697,23 @@ fun ChatScreen(
     var assessmentResult by remember { mutableStateOf<ParsedAssessmentResult?>(null) }
     var showFabMenu by remember { mutableStateOf(false) }
 
-    // Дані для контексту ШІ
+    // Стан для діалогу ліміту цілей
+    var showGoalsLimitDialog by remember { mutableStateOf(false) }
+    var goalsCount by remember { mutableStateOf(0) }
+
+    // 🆕 v2.0: Дані для контексту ШІ (нова термінологія)
     var primaryGoal by remember { mutableStateOf<GoalItem?>(null) }
-    var strategicSteps by remember { mutableStateOf<List<StrategicStepItem>>(emptyList()) }
-    var weeklyTasks by remember { mutableStateOf<List<WeeklyTaskItem>>(emptyList()) }
-    var currentWeek by remember { mutableStateOf(1) }
+    var directions by remember { mutableStateOf<List<DirectionItem>>(emptyList()) }
+    var steps by remember { mutableStateOf<List<StepItem>>(emptyList()) }
+    var currentBlock by remember { mutableStateOf(1) }
+
+    // 🆕 v2.0: Ціль для обговорення (може відрізнятися від primary)
+    var activeGoalForChat by remember { mutableStateOf<GoalItem?>(null) }
 
     // Assessment стани
     var savedAnswers by remember { mutableStateOf<Map<Int, String>>(emptyMap()) }
     var savedGapAnalysis by remember { mutableStateOf("") }
     var savedActionPlan by remember { mutableStateOf("") }
-    var latestAssessment by remember { mutableStateOf<AssessmentHistoryItem?>(null) }
 
     // Завантаження стани
     var isLoadingData by remember { mutableStateOf(true) }
@@ -556,31 +724,58 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
+    // Функція перевірки ліміту цілей
+    fun checkGoalsLimitAndStartAssessment() {
+        scope.launch {
+            val count = supabaseRepo.getGoalsCount(userId)
+            goalsCount = count
+            Log.d(TAG, "📊 Goals count: $count")
+
+            if (count >= 3) {
+                showGoalsLimitDialog = true
+            } else {
+                showAssessmentScreen = true
+            }
+        }
+    }
+
     // ════════════════════════════════════════════════════════════════
-    // 🆕 ЗАВАНТАЖЕННЯ ДАНИХ: Goal + Steps + Tasks + Chat History
+    // ЗАВАНТАЖЕННЯ ДАНИХ (v2.0)
     // ════════════════════════════════════════════════════════════════
-    LaunchedEffect(Unit) {
+    LaunchedEffect(Unit, discussGoalId) {
         isLoadingData = true
         try {
-            // Завантажуємо головну ціль
-            primaryGoal = supabaseRepo.getPrimaryGoal(userId)
-            Log.d(TAG, "💬 Chat: Primary goal loaded: ${primaryGoal?.title ?: "NULL"}")
+            goalsCount = supabaseRepo.getGoalsCount(userId)
+            Log.d(TAG, "💬 Chat: Goals count: $goalsCount")
 
-            primaryGoal?.let { goal ->
-                // Завантажуємо стратегічні кроки
-                strategicSteps = supabaseRepo.getStrategicSteps(goal.id)
-                Log.d(TAG, "💬 Chat: Loaded ${strategicSteps.size} strategic steps")
+            // 🆕 v2.0: Якщо є discussGoalId — завантажуємо цю ціль
+            val goalToLoad = if (discussGoalId != null) {
+                Log.d(TAG, "💬 Chat: Loading specific goal for discussion: $discussGoalId")
+                supabaseRepo.getGoalById(discussGoalId)
+            } else {
+                supabaseRepo.getPrimaryGoal(userId)
+            }
 
-                // Завантажуємо поточний тиждень
-                currentWeek = supabaseRepo.getMaxWeekNumber(goal.id)
-                Log.d(TAG, "💬 Chat: Current week: $currentWeek")
+            if (goalToLoad != null) {
+                activeGoalForChat = goalToLoad
+                primaryGoal = supabaseRepo.getPrimaryGoal(userId) // Для відображення
 
-                // Завантажуємо завдання поточного тижня
-                weeklyTasks = supabaseRepo.getWeeklyTasks(goal.id, currentWeek)
-                Log.d(TAG, "💬 Chat: Loaded ${weeklyTasks.size} weekly tasks")
+                Log.d(TAG, "💬 Chat: Active goal: ${goalToLoad.title}")
 
-                // 🆕 Завантажуємо історію чату
-                val chatHistory = supabaseRepo.getChatHistory(goal.id, 50)
+                // 🆕 v2.0: Завантажуємо напрямки замість стратегічних кроків
+                directions = supabaseRepo.getDirections(goalToLoad.id, blockNumber = 1)
+                Log.d(TAG, "💬 Chat: Loaded ${directions.size} directions")
+
+                // 🆕 v2.0: Завантажуємо поточний блок
+                currentBlock = supabaseRepo.getCurrentBlockNumber(goalToLoad.id)
+                Log.d(TAG, "💬 Chat: Current block: $currentBlock")
+
+                // 🆕 v2.0: Завантажуємо кроки поточного блоку
+                steps = supabaseRepo.getSteps(goalToLoad.id, currentBlock)
+                Log.d(TAG, "💬 Chat: Loaded ${steps.size} steps")
+
+                // Завантажуємо історію чату
+                val chatHistory = supabaseRepo.getChatHistory(goalToLoad.id, 50)
                 Log.d(TAG, "💬 Chat: Loaded ${chatHistory.size} chat messages from history")
 
                 if (chatHistory.isNotEmpty()) {
@@ -588,11 +783,26 @@ fun ChatScreen(
                         ChatMessage(role = msg.role, content = msg.content)
                     }
                 }
-            }
 
-            // Завантажуємо останній assessment для WelcomeCard
-            val history = supabaseRepo.getAssessmentHistory(userId)
-            latestAssessment = history.firstOrNull()
+                // 🆕 v2.0: Якщо це обговорення конкретної цілі — додаємо вітальне повідомлення
+                if (discussGoalId != null && messages.isEmpty()) {
+                    val welcomeMessage = buildString {
+                        appendLine("👋 Давайте обговоримо вашу ціль!")
+                        appendLine()
+                        appendLine("🎯 **${goalToLoad.title}**")
+                        appendLine("💰 Цільова зарплата: ${goalToLoad.targetSalary}")
+                        appendLine()
+                        appendLine("📋 У вас є план з ${directions.size} напрямків та ${steps.size} кроків.")
+                        appendLine()
+                        appendLine("Що саме ви хотіли б обговорити? 🤔")
+                    }
+                    messages = listOf(ChatMessage("assistant", welcomeMessage))
+                    onDiscussGoalConsumed()
+                }
+            } else {
+                primaryGoal = null
+                activeGoalForChat = null
+            }
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error loading chat data: ${e.message}")
@@ -601,11 +811,11 @@ fun ChatScreen(
         }
     }
 
-    // Trigger assessment
+    // Trigger assessment з перевіркою ліміту
     LaunchedEffect(triggerAssessment) {
         if (triggerAssessment) {
-            showAssessmentScreen = true
             onAssessmentTriggered()
+            checkGoalsLimitAndStartAssessment()
         }
     }
 
@@ -641,13 +851,10 @@ fun ChatScreen(
         }
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // 🆕 ФУНКЦІЯ: Побудувати контекст для ШІ
-    // ════════════════════════════════════════════════════════════════
+    // 🆕 v2.0: Функція побудови контексту для ШІ
     fun buildCurrentContext(): String? {
-        val goal = primaryGoal ?: return null
+        val goal = activeGoalForChat ?: return null
 
-        // Конвертуємо ChatMessage в ChatMessageItem для buildAIContext
         val chatMessageItems = messages.takeLast(10).map { msg ->
             ChatMessageItem(
                 id = "",
@@ -662,16 +869,25 @@ fun ChatScreen(
         return geminiRepo.buildAIContext(
             goalTitle = goal.title,
             targetSalary = goal.targetSalary,
-            strategicSteps = strategicSteps,
-            weeklyTasks = weeklyTasks,
-            currentWeek = currentWeek,
+            directions = directions,
+            steps = steps,
+            currentBlock = currentBlock,
             chatHistory = chatMessageItems
         )
     }
 
-    // ════════════════════════════════════════════════════════════════
+    // Діалог ліміту цілей
+    if (showGoalsLimitDialog) {
+        GoalsLimitDialog(
+            onDismiss = { showGoalsLimitDialog = false },
+            onGoToGoalsList = {
+                showGoalsLimitDialog = false
+                onOpenGoalsList()
+            }
+        )
+    }
+
     // UI: Assessment Results Screen
-    // ════════════════════════════════════════════════════════════════
     if (showResultsScreen && assessmentResult != null) {
         AssessmentResultsScreen(
             result = assessmentResult!!,
@@ -685,7 +901,7 @@ fun ChatScreen(
                 savedAnswers = emptyMap()
                 generatedPlan = null
                 planSaved = false
-                showAssessmentScreen = true
+                checkGoalsLimitAndStartAssessment()
             },
             onDiscussPlan = {
                 Log.d(TAG, "🎯 ChatScreen: onDiscussPlan clicked! Plan already saved: $planSaved")
@@ -694,9 +910,7 @@ fun ChatScreen(
             }
         )
     }
-    // ════════════════════════════════════════════════════════════════
     // UI: Assessment Screen
-    // ════════════════════════════════════════════════════════════════
     else if (showAssessmentScreen) {
         AssessmentScreenUI(
             assessmentType = "Повну",
@@ -712,7 +926,7 @@ fun ChatScreen(
 
                     messages = messages + ChatMessage(
                         "assistant",
-                        "✅ Оцінку завершено! Аналізую ваш профіль..."
+                        "✅ Оцінку завершено! Аналізую ваш профіль та генерую 100 кроків..."
                     )
 
                     isLoading = true
@@ -721,7 +935,7 @@ fun ChatScreen(
                         Log.d(TAG, "🔄 ChatScreen: Calling generateGoalWithPlan...")
                         val plan = geminiRepo.generateGoalWithPlan(answersMap, questions)
                         generatedPlan = plan
-                        Log.d(TAG, "✅ ChatScreen: Plan generated: ${plan.goal.title}")
+                        Log.d(TAG, "✅ ChatScreen: Plan generated: ${plan.goal.title}, ${plan.directions.size} directions, ${plan.steps.size} steps")
 
                         Log.d(TAG, "💾 ChatScreen: AUTO-SAVING plan immediately...")
                         val goalId = supabaseRepo.saveCompletePlan(
@@ -731,11 +945,12 @@ fun ChatScreen(
                         )
                         if (goalId != null) {
                             planSaved = true
-                            // Оновлюємо локальні дані
                             primaryGoal = supabaseRepo.getPrimaryGoal(userId)
-                            strategicSteps = supabaseRepo.getStrategicSteps(goalId)
-                            weeklyTasks = supabaseRepo.getWeeklyTasks(goalId, 1)
-                            currentWeek = 1
+                            activeGoalForChat = primaryGoal
+                            directions = supabaseRepo.getDirections(goalId, blockNumber = 1)
+                            steps = supabaseRepo.getSteps(goalId, blockNumber = 1)
+                            currentBlock = 1
+                            goalsCount = supabaseRepo.getGoalsCount(userId)
                             Log.d(TAG, "✅ ChatScreen: Plan AUTO-SAVED with goalId: $goalId")
                         } else {
                             Log.e(TAG, "❌ ChatScreen: Failed to auto-save plan")
@@ -757,33 +972,48 @@ fun ChatScreen(
 
                         messages = messages + ChatMessage("assistant", savedGapAnalysis)
 
-                        // Зберігаємо в chat_messages
-                        primaryGoal?.let { goal ->
+                        activeGoalForChat?.let { goal ->
                             supabaseRepo.saveChatMessage(userId, goal.id, "assistant", savedGapAnalysis)
                         }
 
                         messages = messages + ChatMessage(
                             "assistant",
-                            "📋 Генерую персоналізований план з 10 кроків...\n\n⏳ Це може зайняти до 30 секунд."
+                            "📋 Генерую персоналізований план з 10 напрямків та 100 кроків...\n\n⏳ Це може зайняти до 30 секунд."
                         )
 
-                        savedActionPlan = plan.strategicSteps.joinToString("\n\n") { step ->
+                        // 🆕 v2.0: Використовуємо directions замість strategicSteps
+                        savedActionPlan = plan.directions.joinToString("\n\n") { direction ->
                             buildString {
-                                appendLine("КРОК ${step.number}: ${step.title}")
-                                appendLine(step.description)
-                                appendLine("⏰ Час: ${step.timeframe}")
-                                appendLine("🔥 Пріоритет: ${if (step.number <= 3) "Високий" else "Середній"}")
+                                appendLine("НАПРЯМОК ${direction.number}: ${direction.title}")
+                                appendLine(direction.description)
+                                appendLine("📋 Кроків: 10")
+                                appendLine("🔥 Пріоритет: ${if (direction.number <= 3) "Високий" else "Середній"}")
                             }
                         }
 
                         messages = messages + ChatMessage("assistant", savedActionPlan)
 
-                        // Зберігаємо в chat_messages
-                        primaryGoal?.let { goal ->
+                        activeGoalForChat?.let { goal ->
                             supabaseRepo.saveChatMessage(userId, goal.id, "assistant", savedActionPlan)
                         }
 
-                        assessmentResult = parseAssessmentResults(savedGapAnalysis, savedActionPlan)
+                        // 🆕 v2.0: Створюємо ParsedAssessmentResult напряму з GeneratedPlan
+                        assessmentResult = ParsedAssessmentResult(
+                            matchScore = plan.matchScore,
+                            strengths = listOf("Мотивація до досягнення мети", "Готовність до змін"),
+                            gaps = listOf(plan.gapAnalysis),
+                            expectedSalary = plan.goal.targetSalary,
+                            timeToGoal = "6-12 місяців",
+                            actionSteps = plan.directions.map { direction ->
+                                ParsedActionStep(
+                                    number = direction.number,
+                                    title = direction.title,
+                                    description = direction.description,
+                                    timeEstimate = "Блок 1",
+                                    priority = if (direction.number <= 3) "Високий" else "Середній"
+                                )
+                            }
+                        )
 
                         assessmentResult?.let { result ->
                             supabaseRepo.saveAssessmentResult(
@@ -813,9 +1043,7 @@ fun ChatScreen(
             }
         )
     }
-    // ════════════════════════════════════════════════════════════════
     // UI: Chat Screen
-    // ════════════════════════════════════════════════════════════════
     else {
         Scaffold(
             topBar = {
@@ -830,7 +1058,8 @@ fun ChatScreen(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 18.sp
                                 )
-                                primaryGoal?.let { goal ->
+                                // 🆕 v2.0: Показуємо активну ціль для чату
+                                activeGoalForChat?.let { goal ->
                                     Text(
                                         text = goal.title,
                                         fontSize = 12.sp,
@@ -869,23 +1098,25 @@ fun ChatScreen(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Welcome card якщо немає повідомлень
-                        if (messages.isEmpty() && !isLoadingData && initialPlanContext == null) {
+                        // Welcome card
+                        if (messages.isEmpty() && !isLoadingData && initialPlanContext == null && discussGoalId == null) {
                             item {
                                 WelcomeMessageCard(
-                                    latestAssessment = latestAssessment,
+                                    primaryGoal = activeGoalForChat ?: primaryGoal,
+                                    directionsCount = directions.size,
+                                    stepsCount = steps.size,
                                     onDiscussPlan = {
-                                        latestAssessment?.let { assessment ->
-                                            val answersMap = parseAnswersFromJson(assessment.answers)
-                                            val goalAnswer = answersMap["8"] ?: "Досягти кар'єрної мети"
-                                            val salaryAnswer = answersMap["9"] ?: "Збільшити дохід"
-
-                                            val contextMessage = generatePlanContext(
-                                                goalAnswer = goalAnswer,
-                                                salaryAnswer = salaryAnswer,
-                                                actionPlan = assessment.actionPlan
-                                            )
-
+                                        (activeGoalForChat ?: primaryGoal)?.let { goal ->
+                                            val contextMessage = buildString {
+                                                appendLine("👋 З поверненням!")
+                                                appendLine()
+                                                appendLine("🎯 Твоя мета: ${goal.title}")
+                                                appendLine("💰 Бажаний дохід: ${goal.targetSalary}")
+                                                appendLine()
+                                                appendLine("📋 У тебе є план з ${directions.size} напрямків та ${steps.size} кроків для досягнення мети.")
+                                                appendLine()
+                                                appendLine("З чим я можу тобі допомогти сьогодні? 🚀")
+                                            }
                                             messages = listOf(ChatMessage("assistant", contextMessage))
                                         }
                                     }
@@ -962,16 +1193,13 @@ fun ChatScreen(
 
                                     scope.launch {
                                         try {
-                                            // 🆕 Зберігаємо повідомлення користувача
-                                            primaryGoal?.let { goal ->
+                                            activeGoalForChat?.let { goal ->
                                                 supabaseRepo.saveChatMessage(userId, goal.id, "user", userMessage)
                                             }
 
-                                            // 🆕 Будуємо контекст
                                             val aiContext = buildCurrentContext()
                                             Log.d(TAG, "💬 AI Context built: ${aiContext?.take(200) ?: "NULL"}...")
 
-                                            // 🆕 Відправляємо з контекстом
                                             val aiResponse = StringBuilder()
                                             if (aiContext != null) {
                                                 geminiRepo.sendMessageWithContext(userMessage, aiContext).collect { chunk ->
@@ -986,8 +1214,7 @@ fun ChatScreen(
                                             val responseText = aiResponse.toString()
                                             messages = messages + ChatMessage("assistant", responseText)
 
-                                            // 🆕 Зберігаємо відповідь ШІ
-                                            primaryGoal?.let { goal ->
+                                            activeGoalForChat?.let { goal ->
                                                 supabaseRepo.saveChatMessage(userId, goal.id, "assistant", responseText)
                                             }
 
@@ -1011,9 +1238,7 @@ fun ChatScreen(
                     }
                 }
 
-                // ════════════════════════════════════════════════════════════════
-                // FAB меню з кнопкою "📊 Прогрес"
-                // ════════════════════════════════════════════════════════════════
+                // FAB меню
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
@@ -1023,7 +1248,7 @@ fun ChatScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (showFabMenu && !isLoading) {
-                        // 📊 Прогрес (ПОВЕРНУЛИ!)
+                        // 📊 Прогрес
                         SmallFloatingActionButton(
                             onClick = {
                                 showFabMenu = false
@@ -1070,11 +1295,11 @@ fun ChatScreen(
                             }
                         }
 
-                        // 📋 Історія
+                        // 📋 Мої цілі
                         SmallFloatingActionButton(
                             onClick = {
                                 showFabMenu = false
-                                onOpenHistory()
+                                onOpenGoalsList() // 🆕 Відкриваємо список цілей
                             },
                             containerColor = MaterialTheme.colorScheme.secondaryContainer
                         ) {
@@ -1084,7 +1309,7 @@ fun ChatScreen(
                             ) {
                                 Text("📋", fontSize = 20.sp)
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Історія", fontSize = 14.sp)
+                                Text("Мої цілі", fontSize = 14.sp) // 🆕 Нова назва
                             }
                         }
 
@@ -1092,7 +1317,7 @@ fun ChatScreen(
                         SmallFloatingActionButton(
                             onClick = {
                                 showFabMenu = false
-                                showAssessmentScreen = true
+                                checkGoalsLimitAndStartAssessment()
                             },
                             containerColor = MaterialTheme.colorScheme.primaryContainer
                         ) {
@@ -1135,12 +1360,65 @@ fun ChatScreen(
     }
 }
 
-/**
- * Картка привітального повідомлення
- */
+// ════════════════════════════════════════════════════════════════
+// Діалог ліміту цілей
+// ════════════════════════════════════════════════════════════════
+
+@Composable
+fun GoalsLimitDialog(
+    onDismiss: () -> Unit,
+    onGoToGoalsList: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Text(text = "⚠️", fontSize = 48.sp)
+        },
+        title = {
+            Text(
+                text = "Досягнуто ліміт цілей",
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+        },
+        text = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "У вас вже є 3 цілі — це максимум.",
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Щоб створити нову ціль, спочатку видаліть одну з існуючих.",
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onGoToGoalsList) {
+                Text("📁 Мої цілі")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Скасувати")
+            }
+        }
+    )
+}
+
+// ════════════════════════════════════════════════════════════════
+// Welcome Message Card (v2.0)
+// ════════════════════════════════════════════════════════════════
+
 @Composable
 fun WelcomeMessageCard(
-    latestAssessment: AssessmentHistoryItem?,
+    primaryGoal: GoalItem?,
+    directionsCount: Int = 10,
+    stepsCount: Int = 100,
     onDiscussPlan: () -> Unit
 ) {
     Card(
@@ -1153,11 +1431,7 @@ fun WelcomeMessageCard(
         Column(
             modifier = Modifier.padding(16.dp)
         ) {
-            if (latestAssessment != null) {
-                val answersMap = parseAnswersFromJson(latestAssessment.answers)
-                val goalAnswer = answersMap["8"] ?: "Досягти кар'єрної мети"
-                val salaryAnswer = answersMap["9"] ?: "Збільшити дохід"
-
+            if (primaryGoal != null) {
                 Text(
                     text = "👋 З поверненням!",
                     fontSize = 18.sp,
@@ -1172,7 +1446,7 @@ fun WelcomeMessageCard(
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = goalAnswer,
+                    text = primaryGoal.title,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
@@ -1186,7 +1460,7 @@ fun WelcomeMessageCard(
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = salaryAnswer,
+                    text = primaryGoal.targetSalary,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
@@ -1194,8 +1468,9 @@ fun WelcomeMessageCard(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
+                // 🆕 v2.0: Оновлений текст
                 Text(
-                    text = "📋 У тебе є план з 10 кроків для досягнення мети.",
+                    text = "📋 У тебе є план з $directionsCount напрямків та $stepsCount кроків для досягнення мети.",
                     fontSize = 14.sp
                 )
 
@@ -1224,8 +1499,9 @@ fun WelcomeMessageCard(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
+                // 🆕 v2.0: Оновлений текст
                 Text(
-                    text = "Натисни 🎯 щоб пройти оцінку та отримати персональний план з 10 кроків до твоєї мети!",
+                    text = "Натисни 🎯 щоб пройти оцінку та отримати персональний план з 10 напрямків та 100 кроків до твоєї мети!",
                     fontSize = 14.sp
                 )
             }

@@ -220,13 +220,9 @@ class SupabaseRepository {
     }
 
     // ════════════════════════════════════════════════════════════════
-    // GOALS — CRUD для цілей (v1.5)
+    // GOALS — CRUD для цілей
     // ════════════════════════════════════════════════════════════════
 
-    /**
-     * Створює нову ціль
-     * @return ID створеної цілі або null при помилці
-     */
     suspend fun createGoal(
         userId: String,
         title: String,
@@ -284,9 +280,6 @@ class SupabaseRepository {
         }
     }
 
-    /**
-     * Отримує всі цілі користувача
-     */
     suspend fun getGoals(userId: String): List<GoalItem> = withContext(Dispatchers.IO) {
         try {
             val url = URL("$baseUrl/rest/v1/goals?user_id=eq.$userId&order=created_at.desc")
@@ -331,9 +324,44 @@ class SupabaseRepository {
         }
     }
 
-    /**
-     * Отримує головну (primary) ціль користувача
-     */
+    suspend fun getGoalById(goalId: String): GoalItem? = withContext(Dispatchers.IO) {
+        try {
+            val url = URL("$baseUrl/rest/v1/goals?id=eq.$goalId&limit=1")
+            val connection = url.openConnection() as HttpURLConnection
+
+            connection.apply {
+                requestMethod = "GET"
+                setRequestProperty("apikey", apiKey)
+                setRequestProperty("Authorization", "Bearer $apiKey")
+            }
+
+            val response = connection.inputStream.bufferedReader().readText()
+            connection.disconnect()
+
+            val jsonArray = JSONArray(response)
+            if (jsonArray.length() > 0) {
+                val obj = jsonArray.getJSONObject(0)
+                GoalItem(
+                    id = obj.getString("id"),
+                    userId = obj.getString("user_id"),
+                    assessmentId = obj.optString("assessment_id", null),
+                    title = obj.getString("title"),
+                    targetSalary = obj.optString("target_salary", ""),
+                    isPrimary = obj.getBoolean("is_primary"),
+                    status = obj.getString("status"),
+                    createdAt = obj.getString("created_at"),
+                    updatedAt = obj.getString("updated_at")
+                )
+            } else {
+                println("⚠️ Goal not found: $goalId")
+                null
+            }
+        } catch (e: Exception) {
+            println("❌ Error fetching goal by id: ${e.message}")
+            null
+        }
+    }
+
     suspend fun getPrimaryGoal(userId: String): GoalItem? = withContext(Dispatchers.IO) {
         try {
             val url = URL("$baseUrl/rest/v1/goals?user_id=eq.$userId&is_primary=eq.true&limit=1")
@@ -371,9 +399,6 @@ class SupabaseRepository {
         }
     }
 
-    /**
-     * Перевіряє кількість цілей користувача (ліміт 3)
-     */
     suspend fun getGoalsCount(userId: String): Int = withContext(Dispatchers.IO) {
         try {
             val goals = getGoals(userId)
@@ -383,9 +408,6 @@ class SupabaseRepository {
         }
     }
 
-    /**
-     * 🔧 ВИПРАВЛЕНО: Знімає is_primary з УСІХ цілей користувача
-     */
     suspend fun resetAllPrimaryGoals(userId: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val url = URL("$baseUrl/rest/v1/goals?user_id=eq.$userId")
@@ -411,15 +433,10 @@ class SupabaseRepository {
         }
     }
 
-    /**
-     * Встановлює ціль як головну (і знімає з інших)
-     */
     suspend fun setPrimaryGoal(userId: String, goalId: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            // 1. Знімаємо primary з усіх цілей користувача
             resetAllPrimaryGoals(userId)
 
-            // 2. Встановлюємо primary для обраної цілі
             val setUrl = URL("$baseUrl/rest/v1/goals?id=eq.$goalId")
             val setConnection = setUrl.openConnection() as HttpURLConnection
             setConnection.apply {
@@ -443,9 +460,6 @@ class SupabaseRepository {
         }
     }
 
-    /**
-     * Оновлює статус цілі (active/paused/completed)
-     */
     suspend fun updateGoalStatus(goalId: String, status: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val url = URL("$baseUrl/rest/v1/goals?id=eq.$goalId")
@@ -471,9 +485,6 @@ class SupabaseRepository {
         }
     }
 
-    /**
-     * Видаляє ціль (каскадно видаляє steps, tasks, messages)
-     */
     suspend fun deleteGoal(goalId: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val url = URL("$baseUrl/rest/v1/goals?id=eq.$goalId")
@@ -495,35 +506,38 @@ class SupabaseRepository {
     }
 
     // ════════════════════════════════════════════════════════════════
-    // STRATEGIC STEPS — CRUD для стратегічних кроків (v1.6 з тижнями)
+    // v2.0: DIRECTIONS — 10 напрямків розвитку
+    // Таблиця: strategic_steps (перевикористовуємо)
     // ════════════════════════════════════════════════════════════════
 
     /**
-     * Зберігає 10 стратегічних кроків для цілі
-     * v1.6: Тепер з start_week та end_week
-     * @return Map<Int, String> - номер кроку -> ID кроку (для зв'язку з завданнями)
+     * Зберігає 10 напрямків для блоку
+     * @return Map<Int, String> - номер напрямку -> ID напрямку
      */
-    suspend fun saveStrategicSteps(
+    suspend fun saveDirections(
         goalId: String,
-        steps: List<GeneratedStrategicStep>
+        directions: List<GeneratedDirection>,
+        blockNumber: Int = 1
     ): Map<Int, String> = withContext(Dispatchers.IO) {
         try {
-            val stepIdMap = mutableMapOf<Int, String>()
-            val stepsArray = JSONArray()
+            println("💾 saveDirections: ${directions.size} directions for goal $goalId, block $blockNumber")
 
-            steps.forEach { step ->
-                val stepId = UUID.randomUUID().toString()
-                stepIdMap[step.number] = stepId
+            val directionIdMap = mutableMapOf<Int, String>()
+            val directionsArray = JSONArray()
 
-                stepsArray.put(JSONObject().apply {
-                    put("id", stepId)
+            directions.forEach { direction ->
+                val directionId = UUID.randomUUID().toString()
+                directionIdMap[direction.number] = directionId
+
+                directionsArray.put(JSONObject().apply {
+                    put("id", directionId)
                     put("goal_id", goalId)
-                    put("step_number", step.number)
-                    put("title", step.title)
-                    put("description", step.description)
-                    put("timeframe", step.timeframe)
-                    put("start_week", step.startWeek)   // NEW v1.6
-                    put("end_week", step.endWeek)       // NEW v1.6
+                    put("step_number", direction.number)
+                    put("title", direction.title)
+                    put("description", direction.description)
+                    put("timeframe", "Блок $blockNumber")
+                    put("start_week", blockNumber)
+                    put("end_week", blockNumber)
                     put("status", "pending")
                     put("created_at", Clock.System.now().toString())
                     put("updated_at", Clock.System.now().toString())
@@ -541,32 +555,37 @@ class SupabaseRepository {
                 doOutput = true
             }
             connection.outputStream.use { os ->
-                os.write(stepsArray.toString().toByteArray())
+                os.write(directionsArray.toString().toByteArray())
             }
             val responseCode = connection.responseCode
+
+            val errorResponse = if (responseCode !in 200..299) {
+                connection.errorStream?.bufferedReader()?.readText() ?: "No error details"
+            } else null
+
             connection.disconnect()
 
             if (responseCode in 200..299) {
-                println("✅ Strategic steps saved for goal: $goalId (with week ranges)")
-                stepIdMap
+                println("✅ Directions saved: ${directions.size} for goal $goalId, block $blockNumber")
+                println("✅ Direction ID map: $directionIdMap")
+                directionIdMap
             } else {
-                println("❌ Error saving strategic steps (HTTP $responseCode)")
+                println("❌ Error saving directions (HTTP $responseCode): $errorResponse")
                 emptyMap()
             }
         } catch (e: Exception) {
-            println("❌ Error saving strategic steps: ${e.message}")
+            println("❌ Error saving directions: ${e.message}")
             e.printStackTrace()
             emptyMap()
         }
     }
 
     /**
-     * Отримує стратегічні кроки для цілі
-     * v1.6: Тепер з start_week, end_week та progressPercent
+     * Отримує напрямки для блоку
      */
-    suspend fun getStrategicSteps(goalId: String): List<StrategicStepItem> = withContext(Dispatchers.IO) {
+    suspend fun getDirections(goalId: String, blockNumber: Int = 1): List<DirectionItem> = withContext(Dispatchers.IO) {
         try {
-            val url = URL("$baseUrl/rest/v1/strategic_steps?goal_id=eq.$goalId&order=step_number.asc")
+            val url = URL("$baseUrl/rest/v1/strategic_steps?goal_id=eq.$goalId&start_week=eq.$blockNumber&order=step_number.asc")
             val connection = url.openConnection() as HttpURLConnection
             connection.apply {
                 requestMethod = "GET"
@@ -578,82 +597,90 @@ class SupabaseRepository {
             connection.disconnect()
 
             val jsonArray = JSONArray(response)
-            val items = mutableListOf<StrategicStepItem>()
+            val items = mutableListOf<DirectionItem>()
 
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
                 items.add(
-                    StrategicStepItem(
+                    DirectionItem(
                         id = obj.getString("id"),
                         goalId = obj.getString("goal_id"),
-                        stepNumber = obj.getInt("step_number"),
+                        directionNumber = obj.getInt("step_number"),
                         title = obj.getString("title"),
                         description = obj.optString("description", ""),
-                        timeframe = obj.optString("timeframe", ""),
                         status = obj.getString("status"),
-                        startWeek = obj.optInt("start_week", 1),   // NEW v1.6
-                        endWeek = obj.optInt("end_week", 8),       // NEW v1.6
-                        progressPercent = 0  // Буде розраховано окремо
+                        blockNumber = obj.optInt("start_week", 1)
+                    )
+                )
+            }
+
+            println("✅ Fetched ${items.size} directions for block $blockNumber")
+            items
+        } catch (e: Exception) {
+            println("❌ Error fetching directions: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Отримує всі напрямки для цілі (всіх блоків)
+     */
+    suspend fun getAllDirections(goalId: String): List<DirectionItem> = withContext(Dispatchers.IO) {
+        try {
+            val url = URL("$baseUrl/rest/v1/strategic_steps?goal_id=eq.$goalId&order=start_week.asc,step_number.asc")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.apply {
+                requestMethod = "GET"
+                setRequestProperty("apikey", apiKey)
+                setRequestProperty("Authorization", "Bearer $apiKey")
+            }
+
+            val response = connection.inputStream.bufferedReader().readText()
+            connection.disconnect()
+
+            val jsonArray = JSONArray(response)
+            val items = mutableListOf<DirectionItem>()
+
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                items.add(
+                    DirectionItem(
+                        id = obj.getString("id"),
+                        goalId = obj.getString("goal_id"),
+                        directionNumber = obj.getInt("step_number"),
+                        title = obj.getString("title"),
+                        description = obj.optString("description", ""),
+                        status = obj.getString("status"),
+                        blockNumber = obj.optInt("start_week", 1)
                     )
                 )
             }
 
             items
         } catch (e: Exception) {
-            println("❌ Error fetching strategic steps: ${e.message}")
+            println("❌ Error fetching all directions: ${e.message}")
             emptyList()
         }
     }
 
     /**
-     * Отримує стратегічні кроки з розрахованим прогресом
-     * v1.6: Розраховує прогрес на основі виконаних завдань
+     * Отримує map номер напрямку -> ID напрямку
      */
-    suspend fun getStrategicStepsWithProgress(goalId: String): List<StrategicStepItem> = withContext(Dispatchers.IO) {
+    suspend fun getDirectionIdMap(goalId: String, blockNumber: Int = 1): Map<Int, String> = withContext(Dispatchers.IO) {
         try {
-            // 1. Отримуємо кроки
-            val steps = getStrategicSteps(goalId)
-            if (steps.isEmpty()) return@withContext emptyList()
-
-            // 2. Отримуємо всі завдання для цілі
-            val allTasks = getAllWeeklyTasks(goalId)
-
-            // 3. Розраховуємо прогрес для кожного кроку
-            steps.map { step ->
-                val stepTasks = allTasks.filter { it.strategicStepId == step.id }
-                val doneTasks = stepTasks.count { it.status == "done" }
-                val totalTasks = stepTasks.size
-
-                val progress = if (totalTasks > 0) {
-                    (doneTasks * 100) / totalTasks
-                } else {
-                    // Якщо немає завдань — розраховуємо по тижнях
-                    val currentWeek = getCurrentWeekNumber(goalId)
-                    if (currentWeek >= step.endWeek) {
-                        100  // Тижні пройшли
-                    } else if (currentWeek >= step.startWeek) {
-                        val weeksTotal = step.endWeek - step.startWeek + 1
-                        val weeksPassed = currentWeek - step.startWeek + 1
-                        (weeksPassed * 100) / weeksTotal
-                    } else {
-                        0
-                    }
-                }
-
-                step.copy(progressPercent = progress)
-            }
+            val directions = getDirections(goalId, blockNumber)
+            directions.associate { it.directionNumber to it.id }
         } catch (e: Exception) {
-            println("❌ Error fetching steps with progress: ${e.message}")
-            emptyList()
+            emptyMap()
         }
     }
 
     /**
-     * Оновлює статус стратегічного кроку
+     * Оновлює статус напрямку
      */
-    suspend fun updateStrategicStepStatus(stepId: String, status: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun updateDirectionStatus(directionId: String, status: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            val url = URL("$baseUrl/rest/v1/strategic_steps?id=eq.$stepId")
+            val url = URL("$baseUrl/rest/v1/strategic_steps?id=eq.$directionId")
             val connection = url.openConnection() as HttpURLConnection
             connection.apply {
                 requestMethod = "PATCH"
@@ -670,67 +697,64 @@ class SupabaseRepository {
 
             responseCode in 200..299
         } catch (e: Exception) {
-            println("❌ Error updating step status: ${e.message}")
+            println("❌ Error updating direction status: ${e.message}")
             false
         }
     }
 
-    /**
-     * Отримує активні кроки для поточного тижня
-     * v1.6: Повертає кроки, де currentWeek в діапазоні start_week..end_week
-     */
-    suspend fun getActiveStepsForWeek(goalId: String, weekNumber: Int): List<StrategicStepItem> = withContext(Dispatchers.IO) {
-        try {
-            val allSteps = getStrategicSteps(goalId)
-            allSteps.filter { step ->
-                weekNumber >= step.startWeek && weekNumber <= step.endWeek
-            }
-        } catch (e: Exception) {
-            println("❌ Error getting active steps: ${e.message}")
-            emptyList()
-        }
-    }
-
     // ════════════════════════════════════════════════════════════════
-    // WEEKLY TASKS — CRUD для тижневих завдань (v1.6 з зв'язком до кроків)
+    // v2.0: STEPS — 100 кроків (10 на кожен напрямок)
+    // Таблиця: weekly_tasks (перевикористовуємо)
     // ════════════════════════════════════════════════════════════════
 
     /**
-     * Зберігає 10 тижневих завдань
-     * v1.6: Тепер з strategic_step_id
+     * Зберігає 100 кроків для блоку
+     * @param steps - список з 100 кроків
+     * @param directionIdMap - map номер напрямку -> ID напрямку
      */
-    suspend fun saveWeeklyTasks(
+    suspend fun saveSteps(
         goalId: String,
-        weekNumber: Int,
-        tasks: List<GeneratedWeeklyTask>,
-        stepIdMap: Map<Int, String> = emptyMap()  // NEW: номер кроку -> ID кроку
+        steps: List<GeneratedStep>,
+        directionIdMap: Map<Int, String>,
+        blockNumber: Int = 1
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            // Якщо stepIdMap порожній — спробуємо отримати з бази
-            val actualStepIdMap = if (stepIdMap.isEmpty()) {
-                getStepIdMap(goalId)
-            } else {
-                stepIdMap
+            println("💾 saveSteps called: ${steps.size} steps, directionIdMap size: ${directionIdMap.size}")
+
+            if (steps.isEmpty()) {
+                println("⚠️ saveSteps: No steps to save!")
+                return@withContext false
             }
 
-            val tasksArray = JSONArray()
-            tasks.forEach { task ->
-                val stepId = actualStepIdMap[task.strategicStepNumber]
+            println("💾 First step: #${steps.first().number} - ${steps.first().title}")
+            println("💾 Last step: #${steps.last().number} - ${steps.last().title}")
 
-                tasksArray.put(JSONObject().apply {
+            val stepsArray = JSONArray()
+
+            steps.forEach { step ->
+                val directionId = directionIdMap[step.directionNumber]
+
+                if (directionId == null) {
+                    println("⚠️ No direction ID for step ${step.number} (direction ${step.directionNumber})")
+                }
+
+                stepsArray.put(JSONObject().apply {
                     put("id", UUID.randomUUID().toString())
                     put("goal_id", goalId)
-                    put("week_number", weekNumber)
-                    put("task_number", task.number)
-                    put("title", task.title)
-                    put("description", task.description)
+                    put("week_number", blockNumber)
+                    put("task_number", step.number)
+                    put("title", step.title)
+                    put("description", step.description)
                     put("status", "pending")
-                    if (stepId != null) {
-                        put("strategic_step_id", stepId)  // NEW v1.6
+                    if (directionId != null) {
+                        put("strategic_step_id", directionId)
                     }
                     put("created_at", Clock.System.now().toString())
                 })
             }
+
+            println("💾 JSON array prepared with ${stepsArray.length()} items")
+            println("💾 JSON size: ${stepsArray.toString().length} bytes")
 
             val url = URL("$baseUrl/rest/v1/weekly_tasks")
             val connection = url.openConnection() as HttpURLConnection
@@ -742,40 +766,44 @@ class SupabaseRepository {
                 setRequestProperty("Prefer", "return=minimal")
                 doOutput = true
             }
+
             connection.outputStream.use { os ->
-                os.write(tasksArray.toString().toByteArray())
+                os.write(stepsArray.toString().toByteArray())
             }
+
             val responseCode = connection.responseCode
+
+            val errorResponse = if (responseCode !in 200..299) {
+                connection.errorStream?.bufferedReader()?.readText() ?: "No error details"
+            } else null
+
             connection.disconnect()
 
-            println("✅ Weekly tasks saved for goal $goalId, week $weekNumber (with step links)")
-            responseCode in 200..299
+            println("💾 saveSteps HTTP response: $responseCode")
+            if (errorResponse != null) {
+                println("❌ saveSteps error: $errorResponse")
+            }
+
+            if (responseCode in 200..299) {
+                println("✅ ${steps.size} steps saved for goal $goalId, block $blockNumber")
+                true
+            } else {
+                println("❌ Error saving steps (HTTP $responseCode): $errorResponse")
+                false
+            }
         } catch (e: Exception) {
-            println("❌ Error saving weekly tasks: ${e.message}")
+            println("❌ Error saving steps: ${e.message}")
             e.printStackTrace()
             false
         }
     }
 
     /**
-     * Отримує map номер кроку -> ID кроку
+     * Отримує кроки для блоку
      */
-    suspend fun getStepIdMap(goalId: String): Map<Int, String> = withContext(Dispatchers.IO) {
+    suspend fun getSteps(goalId: String, blockNumber: Int = 1): List<StepItem> = withContext(Dispatchers.IO) {
         try {
-            val steps = getStrategicSteps(goalId)
-            steps.associate { it.stepNumber to it.id }
-        } catch (e: Exception) {
-            emptyMap()
-        }
-    }
-
-    /**
-     * Отримує завдання для конкретного тижня
-     * v1.6: Тепер з strategic_step_id
-     */
-    suspend fun getWeeklyTasks(goalId: String, weekNumber: Int): List<WeeklyTaskItem> = withContext(Dispatchers.IO) {
-        try {
-            val url = URL("$baseUrl/rest/v1/weekly_tasks?goal_id=eq.$goalId&week_number=eq.$weekNumber&order=task_number.asc")
+            val url = URL("$baseUrl/rest/v1/weekly_tasks?goal_id=eq.$goalId&week_number=eq.$blockNumber&order=task_number.asc")
             val connection = url.openConnection() as HttpURLConnection
             connection.apply {
                 requestMethod = "GET"
@@ -787,36 +815,99 @@ class SupabaseRepository {
             connection.disconnect()
 
             val jsonArray = JSONArray(response)
-            val items = mutableListOf<WeeklyTaskItem>()
+            val items = mutableListOf<StepItem>()
 
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
+                val stepNumber = obj.getInt("task_number")
+                val directionNumber = ((stepNumber - 1) / 10) + 1
+                val localNumber = ((stepNumber - 1) % 10) + 1
+
+                // 🆕 Завантажуємо опис з БД
+                val description = obj.optString("description", "")
+                // Якщо опис довший за 100 символів - це детальний опис
+                val detailedDesc = if (description.length > 100) description else null
+
                 items.add(
-                    WeeklyTaskItem(
+                    StepItem(
                         id = obj.getString("id"),
                         goalId = obj.getString("goal_id"),
-                        weekNumber = obj.getInt("week_number"),
-                        taskNumber = obj.getInt("task_number"),
+                        directionId = obj.optString("strategic_step_id", ""),
+                        blockNumber = obj.getInt("week_number"),
+                        stepNumber = stepNumber,
+                        localNumber = localNumber,
                         title = obj.getString("title"),
-                        description = obj.optString("description", ""),
-                        status = obj.getString("status"),
-                        strategicStepId = obj.optString("strategic_step_id", null)  // NEW v1.6
+                        description = description,
+                        detailedDescription = detailedDesc, // 🆕 Завантажуємо з БД
+                        status = obj.getString("status")
+                    )
+                )
+            }
+
+            println("✅ Fetched ${items.size} steps for block $blockNumber")
+            items
+        } catch (e: Exception) {
+            println("❌ Error fetching steps: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Отримує кроки для конкретного напрямку
+     */
+    suspend fun getStepsForDirection(goalId: String, directionId: String, blockNumber: Int = 1): List<StepItem> = withContext(Dispatchers.IO) {
+        try {
+            val url = URL("$baseUrl/rest/v1/weekly_tasks?goal_id=eq.$goalId&week_number=eq.$blockNumber&strategic_step_id=eq.$directionId&order=task_number.asc")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.apply {
+                requestMethod = "GET"
+                setRequestProperty("apikey", apiKey)
+                setRequestProperty("Authorization", "Bearer $apiKey")
+            }
+
+            val response = connection.inputStream.bufferedReader().readText()
+            connection.disconnect()
+
+            val jsonArray = JSONArray(response)
+            val items = mutableListOf<StepItem>()
+
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                val stepNumber = obj.getInt("task_number")
+                val directionNumber = ((stepNumber - 1) / 10) + 1
+                val localNumber = ((stepNumber - 1) % 10) + 1
+
+                // 🆕 Завантажуємо опис з БД
+                val description = obj.optString("description", "")
+                val detailedDesc = if (description.length > 100) description else null
+
+                items.add(
+                    StepItem(
+                        id = obj.getString("id"),
+                        goalId = obj.getString("goal_id"),
+                        directionId = obj.optString("strategic_step_id", ""),
+                        blockNumber = obj.getInt("week_number"),
+                        stepNumber = stepNumber,
+                        localNumber = localNumber,
+                        title = obj.getString("title"),
+                        description = description,
+                        detailedDescription = detailedDesc,
+                        status = obj.getString("status")
                     )
                 )
             }
 
             items
         } catch (e: Exception) {
-            println("❌ Error fetching weekly tasks: ${e.message}")
+            println("❌ Error fetching steps for direction: ${e.message}")
             emptyList()
         }
     }
 
     /**
-     * Отримує ВСІ завдання для цілі (для розрахунку прогресу)
-     * v1.6: Нова функція
+     * Отримує всі кроки для цілі (всіх блоків)
      */
-    suspend fun getAllWeeklyTasks(goalId: String): List<WeeklyTaskItem> = withContext(Dispatchers.IO) {
+    suspend fun getAllSteps(goalId: String): List<StepItem> = withContext(Dispatchers.IO) {
         try {
             val url = URL("$baseUrl/rest/v1/weekly_tasks?goal_id=eq.$goalId&order=week_number.asc,task_number.asc")
             val connection = url.openConnection() as HttpURLConnection
@@ -830,36 +921,154 @@ class SupabaseRepository {
             connection.disconnect()
 
             val jsonArray = JSONArray(response)
-            val items = mutableListOf<WeeklyTaskItem>()
+            val items = mutableListOf<StepItem>()
 
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
+                val stepNumber = obj.getInt("task_number")
+                val localNumber = ((stepNumber - 1) % 10) + 1
+
+                // 🆕 Завантажуємо опис з БД
+                val description = obj.optString("description", "")
+                val detailedDesc = if (description.length > 100) description else null
+
                 items.add(
-                    WeeklyTaskItem(
+                    StepItem(
                         id = obj.getString("id"),
                         goalId = obj.getString("goal_id"),
-                        weekNumber = obj.getInt("week_number"),
-                        taskNumber = obj.getInt("task_number"),
+                        directionId = obj.optString("strategic_step_id", ""),
+                        blockNumber = obj.getInt("week_number"),
+                        stepNumber = stepNumber,
+                        localNumber = localNumber,
                         title = obj.getString("title"),
-                        description = obj.optString("description", ""),
-                        status = obj.getString("status"),
-                        strategicStepId = obj.optString("strategic_step_id", null)
+                        description = description,
+                        detailedDescription = detailedDesc,
+                        status = obj.getString("status")
                     )
                 )
             }
 
-            println("✅ Fetched ${items.size} total tasks for goal $goalId")
+            println("✅ Fetched ${items.size} total steps for goal $goalId")
             items
         } catch (e: Exception) {
-            println("❌ Error fetching all weekly tasks: ${e.message}")
+            println("❌ Error fetching all steps: ${e.message}")
             emptyList()
         }
     }
 
     /**
-     * Отримує поточний номер тижня для цілі (останній)
+     * Оновлює статус кроку (pending/done/skipped)
      */
-    suspend fun getCurrentWeekNumber(goalId: String): Int = withContext(Dispatchers.IO) {
+    suspend fun updateStepStatus(stepId: String, status: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val completedAt = if (status == "done") {
+                """, "completed_at": "${Clock.System.now()}""""
+            } else {
+                ""
+            }
+
+            val url = URL("$baseUrl/rest/v1/weekly_tasks?id=eq.$stepId")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.apply {
+                requestMethod = "PATCH"
+                setRequestProperty("apikey", apiKey)
+                setRequestProperty("Authorization", "Bearer $apiKey")
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+            }
+            connection.outputStream.use { os ->
+                os.write("""{"status": "$status"$completedAt}""".toByteArray())
+            }
+            val responseCode = connection.responseCode
+            connection.disconnect()
+
+            println("✅ Step status updated: $stepId -> $status")
+            responseCode in 200..299
+        } catch (e: Exception) {
+            println("❌ Error updating step status: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Зберігає детальний опис кроку (генерується on-demand)
+     */
+    suspend fun updateStepDetailedDescription(stepId: String, detailedDescription: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val escapedDescription = detailedDescription
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t")
+
+            val url = URL("$baseUrl/rest/v1/weekly_tasks?id=eq.$stepId")
+            val connection = url.openConnection() as HttpURLConnection
+            connection.apply {
+                requestMethod = "PATCH"
+                setRequestProperty("apikey", apiKey)
+                setRequestProperty("Authorization", "Bearer $apiKey")
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+            }
+            connection.outputStream.use { os ->
+                os.write("""{"description": "$escapedDescription"}""".toByteArray())
+            }
+            val responseCode = connection.responseCode
+            connection.disconnect()
+
+            println("✅ Step detailed description saved: $stepId")
+            responseCode in 200..299
+        } catch (e: Exception) {
+            println("❌ Error saving step description: ${e.message}")
+            false
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // v2.0: DIRECTIONS WITH STEPS — Напрямки з кроками
+    // ════════════════════════════════════════════════════════════════
+
+    /**
+     * Отримує напрямки з кроками для блоку
+     */
+    suspend fun getDirectionsWithSteps(goalId: String, blockNumber: Int = 1): List<DirectionWithSteps> = withContext(Dispatchers.IO) {
+        try {
+            val directions = getDirections(goalId, blockNumber)
+            val allSteps = getSteps(goalId, blockNumber)
+
+            directions.map { direction ->
+                val directionSteps = allSteps.filter { it.directionId == direction.id }
+                val doneCount = directionSteps.count { it.status == "done" }
+                val skippedCount = directionSteps.count { it.status == "skipped" }
+
+                val status = when {
+                    doneCount == 10 -> "done"
+                    doneCount > 0 || skippedCount > 0 -> "in_progress"
+                    else -> "pending"
+                }
+
+                DirectionWithSteps(
+                    direction = direction.copy(status = status),
+                    steps = directionSteps,
+                    doneCount = doneCount,
+                    skippedCount = skippedCount
+                )
+            }
+        } catch (e: Exception) {
+            println("❌ Error getting directions with steps: ${e.message}")
+            emptyList()
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // v2.0: BLOCK MANAGEMENT — Управління блоками
+    // ════════════════════════════════════════════════════════════════
+
+    /**
+     * Отримує поточний номер блоку для цілі
+     */
+    suspend fun getCurrentBlockNumber(goalId: String): Int = withContext(Dispatchers.IO) {
         try {
             val url = URL("$baseUrl/rest/v1/weekly_tasks?goal_id=eq.$goalId&select=week_number&order=week_number.desc&limit=1")
             val connection = url.openConnection() as HttpURLConnection
@@ -876,150 +1085,77 @@ class SupabaseRepository {
             if (jsonArray.length() > 0) {
                 jsonArray.getJSONObject(0).getInt("week_number")
             } else {
-                0 // Немає завдань ще
-            }
-        } catch (e: Exception) {
-            println("❌ Error getting current week: ${e.message}")
-            1
-        }
-    }
-
-    /**
-     * Отримує максимальний номер тижня для цілі
-     * Використовується для навігації по тижнях
-     * @return Максимальний номер тижня або 1 якщо тижнів немає
-     */
-    suspend fun getMaxWeekNumber(goalId: String): Int = withContext(Dispatchers.IO) {
-        try {
-            val url = URL("$baseUrl/rest/v1/weekly_tasks?goal_id=eq.$goalId&select=week_number&order=week_number.desc&limit=1")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.apply {
-                requestMethod = "GET"
-                setRequestProperty("apikey", apiKey)
-                setRequestProperty("Authorization", "Bearer $apiKey")
-            }
-
-            val response = connection.inputStream.bufferedReader().readText()
-            connection.disconnect()
-
-            val jsonArray = JSONArray(response)
-            if (jsonArray.length() > 0) {
-                val maxWeek = jsonArray.getJSONObject(0).getInt("week_number")
-                println("📅 Max week number for goal $goalId: $maxWeek")
-                maxWeek
-            } else {
-                println("📅 No weeks found for goal $goalId, returning 1")
                 1
             }
         } catch (e: Exception) {
-            println("❌ Error getting max week number: ${e.message}")
+            println("❌ Error getting current block: ${e.message}")
             1
         }
     }
 
     /**
-     * Оновлює статус завдання (pending/done/skipped)
+     * Отримує максимальний номер блоку для цілі
      */
-    suspend fun updateTaskStatus(taskId: String, status: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val completedAt = if (status == "done") {
-                """, "completed_at": "${Clock.System.now()}""""
-            } else {
-                ""
-            }
-
-            val url = URL("$baseUrl/rest/v1/weekly_tasks?id=eq.$taskId")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.apply {
-                requestMethod = "PATCH"
-                setRequestProperty("apikey", apiKey)
-                setRequestProperty("Authorization", "Bearer $apiKey")
-                setRequestProperty("Content-Type", "application/json")
-                doOutput = true
-            }
-            connection.outputStream.use { os ->
-                os.write("""{"status": "$status"$completedAt}""".toByteArray())
-            }
-            val responseCode = connection.responseCode
-            connection.disconnect()
-
-            println("✅ Task status updated: $taskId -> $status")
-            responseCode in 200..299
-        } catch (e: Exception) {
-            println("❌ Error updating task status: ${e.message}")
-            false
-        }
-    }
+    suspend fun getMaxBlockNumber(goalId: String): Int = getCurrentBlockNumber(goalId)
 
     /**
-     * Перевіряє чи всі завдання тижня виконані/пропущені
+     * Перевіряє чи блок завершений (всі 100 кроків done/skipped)
      */
-    suspend fun isWeekComplete(goalId: String, weekNumber: Int): Boolean = withContext(Dispatchers.IO) {
+    suspend fun isBlockComplete(goalId: String, blockNumber: Int): Boolean = withContext(Dispatchers.IO) {
         try {
-            val tasks = getWeeklyTasks(goalId, weekNumber)
-            tasks.isNotEmpty() && tasks.all { it.status == "done" || it.status == "skipped" }
+            val steps = getSteps(goalId, blockNumber)
+            steps.size == 100 && steps.all { it.status == "done" || it.status == "skipped" }
         } catch (e: Exception) {
             false
         }
     }
 
     /**
-     * Отримує статистику тижня
+     * Отримує статистику блоку
      */
-    suspend fun getWeekStats(goalId: String, weekNumber: Int): WeekStats = withContext(Dispatchers.IO) {
+    suspend fun getBlockStats(goalId: String, blockNumber: Int): BlockStats = withContext(Dispatchers.IO) {
         try {
-            val tasks = getWeeklyTasks(goalId, weekNumber)
-            WeekStats(
-                total = tasks.size,
-                done = tasks.count { it.status == "done" },
-                skipped = tasks.count { it.status == "skipped" },
-                pending = tasks.count { it.status == "pending" }
+            val steps = getSteps(goalId, blockNumber)
+            BlockStats(
+                total = steps.size,
+                done = steps.count { it.status == "done" },
+                skipped = steps.count { it.status == "skipped" },
+                pending = steps.count { it.status == "pending" }
             )
         } catch (e: Exception) {
-            WeekStats(0, 0, 0, 0)
+            BlockStats(0, 0, 0, 0)
         }
     }
 
     // ════════════════════════════════════════════════════════════════
-    // PROGRESS CALCULATION — Розрахунок прогресу (v1.6)
+    // v2.0: PROGRESS CALCULATION — Розрахунок прогресу
     // ════════════════════════════════════════════════════════════════
 
     /**
-     * Розраховує загальний прогрес цілі (0-100%)
-     * v1.6: На основі виконаних завдань та кроків
+     * Розраховує загальний прогрес цілі
      */
     suspend fun calculateGoalProgress(goalId: String): GoalProgress = withContext(Dispatchers.IO) {
         try {
-            // 1. Отримуємо всі завдання
-            val allTasks = getAllWeeklyTasks(goalId)
-            val doneTasks = allTasks.count { it.status == "done" }
-            val totalTasks = allTasks.size
+            val allSteps = getAllSteps(goalId)
+            val doneSteps = allSteps.count { it.status == "done" }
+            val totalSteps = allSteps.size
 
-            // 2. Отримуємо кроки
-            val steps = getStrategicSteps(goalId)
-            val doneSteps = steps.count { it.status == "done" }
-            val inProgressSteps = steps.count { it.status == "in_progress" }
+            val directions = getAllDirections(goalId)
+            val doneDirections = directions.count { it.status == "done" }
+            val inProgressDirections = directions.count { it.status == "in_progress" }
 
-            // 3. Поточний тиждень
-            val currentWeek = getCurrentWeekNumber(goalId)
+            val currentBlock = getCurrentBlockNumber(goalId)
 
-            // 4. Розраховуємо прогрес
-            // 50% вага — завдання, 50% вага — кроки
-            val tasksProgress = if (totalTasks > 0) (doneTasks * 100) / totalTasks else 0
-            val stepsProgress = if (steps.isNotEmpty()) {
-                ((doneSteps * 100) + (inProgressSteps * 50)) / steps.size
-            } else 0
-
-            val overallProgress = (tasksProgress + stepsProgress) / 2
+            val overallProgress = if (totalSteps > 0) (doneSteps * 100) / totalSteps else 0
 
             GoalProgress(
                 overallPercent = overallProgress,
-                tasksCompleted = doneTasks,
-                tasksTotal = totalTasks,
-                stepsCompleted = doneSteps,
-                stepsInProgress = inProgressSteps,
-                stepsTotal = steps.size,
-                currentWeek = currentWeek
+                tasksCompleted = doneSteps,
+                tasksTotal = totalSteps,
+                stepsCompleted = doneDirections,
+                stepsInProgress = inProgressDirections,
+                stepsTotal = directions.size,
+                currentWeek = currentBlock
             )
         } catch (e: Exception) {
             println("❌ Error calculating goal progress: ${e.message}")
@@ -1027,56 +1163,10 @@ class SupabaseRepository {
         }
     }
 
-    /**
-     * Отримує завдання для конкретного кроку
-     * v1.6: Нова функція
-     */
-    suspend fun getTasksForStep(goalId: String, stepId: String): List<WeeklyTaskItem> = withContext(Dispatchers.IO) {
-        try {
-            val url = URL("$baseUrl/rest/v1/weekly_tasks?goal_id=eq.$goalId&strategic_step_id=eq.$stepId&order=week_number.asc,task_number.asc")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.apply {
-                requestMethod = "GET"
-                setRequestProperty("apikey", apiKey)
-                setRequestProperty("Authorization", "Bearer $apiKey")
-            }
-
-            val response = connection.inputStream.bufferedReader().readText()
-            connection.disconnect()
-
-            val jsonArray = JSONArray(response)
-            val items = mutableListOf<WeeklyTaskItem>()
-
-            for (i in 0 until jsonArray.length()) {
-                val obj = jsonArray.getJSONObject(i)
-                items.add(
-                    WeeklyTaskItem(
-                        id = obj.getString("id"),
-                        goalId = obj.getString("goal_id"),
-                        weekNumber = obj.getInt("week_number"),
-                        taskNumber = obj.getInt("task_number"),
-                        title = obj.getString("title"),
-                        description = obj.optString("description", ""),
-                        status = obj.getString("status"),
-                        strategicStepId = obj.optString("strategic_step_id", null)
-                    )
-                )
-            }
-
-            items
-        } catch (e: Exception) {
-            println("❌ Error fetching tasks for step: ${e.message}")
-            emptyList()
-        }
-    }
-
     // ════════════════════════════════════════════════════════════════
     // CHAT MESSAGES — CRUD для історії чату
     // ════════════════════════════════════════════════════════════════
 
-    /**
-     * Зберігає повідомлення чату
-     */
     suspend fun saveChatMessage(
         userId: String,
         goalId: String,
@@ -1122,9 +1212,6 @@ class SupabaseRepository {
         }
     }
 
-    /**
-     * Отримує історію чату для цілі
-     */
     suspend fun getChatHistory(goalId: String, limit: Int = 50): List<ChatMessageItem> = withContext(Dispatchers.IO) {
         try {
             val url = URL("$baseUrl/rest/v1/chat_messages?goal_id=eq.$goalId&order=created_at.asc&limit=$limit")
@@ -1162,9 +1249,6 @@ class SupabaseRepository {
         }
     }
 
-    /**
-     * Видаляє історію чату для цілі
-     */
     suspend fun clearChatHistory(goalId: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val url = URL("$baseUrl/rest/v1/chat_messages?goal_id=eq.$goalId")
@@ -1185,12 +1269,11 @@ class SupabaseRepository {
     }
 
     // ════════════════════════════════════════════════════════════════
-    // 🔧 ВИПРАВЛЕНО: КОМПЛЕКСНА ФУНКЦІЯ — Зберегти весь план (v1.6)
+    // v2.0: КОМПЛЕКСНА ФУНКЦІЯ — Зберегти весь план
     // ════════════════════════════════════════════════════════════════
 
     /**
-     * Зберігає повний план: ціль + кроки + завдання
-     * v1.6: Тепер зберігає зв'язки між завданнями і кроками
+     * Зберігає повний план: ціль + 10 напрямків + 100 кроків
      * @return ID створеної цілі або null при помилці
      */
     suspend fun saveCompletePlan(
@@ -1200,20 +1283,29 @@ class SupabaseRepository {
         makePrimary: Boolean = true
     ): String? = withContext(Dispatchers.IO) {
         try {
-            // 1. Перевіряємо ліміт цілей
+            println("📦 saveCompletePlan started")
+            println("📦 Plan: ${plan.goal.title}")
+            println("📦 Directions count: ${plan.directions.size}")
+            println("📦 Steps count: ${plan.steps.size}")
+
+            if (plan.directions.isNotEmpty()) {
+                println("📦 First direction: ${plan.directions.first().title} - ${plan.directions.first().description.take(50)}")
+            }
+            if (plan.steps.isNotEmpty()) {
+                println("📦 First step: ${plan.steps.first().title}")
+            }
+
             val currentCount = getGoalsCount(userId)
             if (currentCount >= 3) {
                 println("❌ Goals limit reached (3)")
                 return@withContext null
             }
 
-            // 2. Якщо makePrimary — знімаємо primary з УСІХ цілей
             if (makePrimary) {
                 println("🔄 Resetting is_primary for all existing goals...")
                 resetAllPrimaryGoals(userId)
             }
 
-            // 3. Створюємо ціль
             val goalId = createGoal(
                 userId = userId,
                 title = plan.goal.title,
@@ -1229,21 +1321,23 @@ class SupabaseRepository {
 
             println("✅ New goal created: $goalId (is_primary: $makePrimary)")
 
-            // 4. Зберігаємо стратегічні кроки (отримуємо map ID)
-            val stepIdMap = saveStrategicSteps(goalId, plan.strategicSteps)
-            if (stepIdMap.isEmpty()) {
-                println("⚠️ Warning: Failed to save strategic steps")
+            println("📦 Saving ${plan.directions.size} directions...")
+            val directionIdMap = saveDirections(goalId, plan.directions, blockNumber = 1)
+            if (directionIdMap.isEmpty()) {
+                println("⚠️ Warning: Failed to save directions")
             } else {
-                println("✅ Strategic steps saved with ID map: $stepIdMap")
+                println("✅ ${directionIdMap.size} directions saved with ID map")
             }
 
-            // 5. Зберігаємо тижневі завдання з прив'язкою до кроків
-            val tasksResult = saveWeeklyTasks(goalId, 1, plan.weeklyTasks, stepIdMap)
-            if (!tasksResult) {
-                println("⚠️ Warning: Failed to save weekly tasks")
+            println("📦 Saving ${plan.steps.size} steps with directionIdMap size: ${directionIdMap.size}")
+            val stepsResult = saveSteps(goalId, plan.steps, directionIdMap, blockNumber = 1)
+            println("📦 Steps save result: $stepsResult")
+
+            if (!stepsResult) {
+                println("⚠️ Warning: Failed to save steps")
             }
 
-            println("✅ Complete plan saved: $goalId with Week 1 tasks (linked to steps)")
+            println("✅ Complete plan saved: $goalId with ${plan.directions.size} directions and ${plan.steps.size} steps")
             goalId
 
         } catch (e: Exception) {
@@ -1251,6 +1345,151 @@ class SupabaseRepository {
             e.printStackTrace()
             null
         }
+    }
+
+    /**
+     * Зберігає наступний блок (після завершення попереднього)
+     */
+    suspend fun saveNextBlock(
+        goalId: String,
+        plan: GeneratedPlan,
+        blockNumber: Int
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val directionIdMap = saveDirections(goalId, plan.directions, blockNumber)
+            if (directionIdMap.isEmpty()) {
+                println("❌ Failed to save directions for block $blockNumber")
+                return@withContext false
+            }
+
+            val stepsResult = saveSteps(goalId, plan.steps, directionIdMap, blockNumber)
+            if (!stepsResult) {
+                println("❌ Failed to save steps for block $blockNumber")
+                return@withContext false
+            }
+
+            println("✅ Block $blockNumber saved: 10 directions, 100 steps")
+            true
+        } catch (e: Exception) {
+            println("❌ Error saving next block: ${e.message}")
+            false
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // DEPRECATED — Старі функції для зворотної сумісності
+    // ════════════════════════════════════════════════════════════════
+
+    @Deprecated("Use saveDirections instead")
+    suspend fun saveStrategicSteps(
+        goalId: String,
+        steps: List<GeneratedStrategicStep>
+    ): Map<Int, String> = withContext(Dispatchers.IO) {
+        val directions = steps.map { step ->
+            GeneratedDirection(
+                number = step.number,
+                title = step.title,
+                description = step.description
+            )
+        }
+        saveDirections(goalId, directions, 1)
+    }
+
+    @Deprecated("Use getDirections instead")
+    suspend fun getStrategicSteps(goalId: String): List<StrategicStepItem> = withContext(Dispatchers.IO) {
+        val directions = getDirections(goalId, 1)
+        directions.map { dir ->
+            StrategicStepItem(
+                id = dir.id,
+                goalId = dir.goalId,
+                stepNumber = dir.directionNumber,
+                title = dir.title,
+                description = dir.description,
+                timeframe = "Блок ${dir.blockNumber}",
+                status = dir.status,
+                startWeek = dir.blockNumber,
+                endWeek = dir.blockNumber,
+                progressPercent = 0
+            )
+        }
+    }
+
+    @Deprecated("Use getSteps instead")
+    suspend fun getWeeklyTasks(goalId: String, weekNumber: Int): List<WeeklyTaskItem> = withContext(Dispatchers.IO) {
+        val steps = getSteps(goalId, weekNumber)
+        steps.map { step ->
+            WeeklyTaskItem(
+                id = step.id,
+                goalId = step.goalId,
+                weekNumber = step.blockNumber,
+                taskNumber = step.stepNumber,
+                title = step.title,
+                description = step.description,
+                status = step.status,
+                strategicStepId = step.directionId
+            )
+        }
+    }
+
+    @Deprecated("Use updateStepStatus instead")
+    suspend fun updateTaskStatus(taskId: String, status: String): Boolean =
+        updateStepStatus(taskId, status)
+
+    @Deprecated("Use getCurrentBlockNumber instead")
+    suspend fun getCurrentWeekNumber(goalId: String): Int = getCurrentBlockNumber(goalId)
+
+    @Deprecated("Use getMaxBlockNumber instead")
+    suspend fun getMaxWeekNumber(goalId: String): Int = getMaxBlockNumber(goalId)
+
+    @Deprecated("Use getBlockStats instead")
+    suspend fun getWeekStats(goalId: String, weekNumber: Int): WeekStats {
+        val blockStats = getBlockStats(goalId, weekNumber)
+        return WeekStats(
+            total = blockStats.total,
+            done = blockStats.done,
+            skipped = blockStats.skipped,
+            pending = blockStats.pending
+        )
+    }
+
+    @Deprecated("Use isBlockComplete instead")
+    suspend fun isWeekComplete(goalId: String, weekNumber: Int): Boolean =
+        isBlockComplete(goalId, weekNumber)
+
+    @Deprecated("Use getAllSteps instead")
+    suspend fun getAllWeeklyTasks(goalId: String): List<WeeklyTaskItem> = withContext(Dispatchers.IO) {
+        val steps = getAllSteps(goalId)
+        steps.map { step ->
+            WeeklyTaskItem(
+                id = step.id,
+                goalId = step.goalId,
+                weekNumber = step.blockNumber,
+                taskNumber = step.stepNumber,
+                title = step.title,
+                description = step.description,
+                status = step.status,
+                strategicStepId = step.directionId
+            )
+        }
+    }
+
+    @Deprecated("Use saveSteps instead")
+    suspend fun saveWeeklyTasks(
+        goalId: String,
+        weekNumber: Int,
+        tasks: List<GeneratedWeeklyTask>,
+        stepIdMap: Map<Int, String> = emptyMap()
+    ): Boolean = withContext(Dispatchers.IO) {
+        val steps = tasks.map { task ->
+            GeneratedStep(
+                number = task.number,
+                localNumber = ((task.number - 1) % 10) + 1,
+                title = task.title,
+                description = task.description,
+                directionNumber = task.strategicStepNumber
+            )
+        }
+        saveSteps(goalId, steps, stepIdMap, weekNumber)
     }
 }
 
@@ -1275,11 +1514,57 @@ data class GoalItem(
     val title: String,
     val targetSalary: String,
     val isPrimary: Boolean,
-    val status: String, // "active", "paused", "completed"
+    val status: String,
     val createdAt: String,
     val updatedAt: String
 )
 
+/**
+ * v2.0: Статистика блоку (100 кроків)
+ */
+data class BlockStats(
+    val total: Int,
+    val done: Int,
+    val skipped: Int,
+    val pending: Int
+) {
+    val isComplete: Boolean get() = total == 100 && pending == 0
+    val progressPercent: Int get() = if (total > 0) (done * 100 / total) else 0
+}
+
+/**
+ * v2.0: Напрямок з кроками
+ */
+data class DirectionWithSteps(
+    val direction: DirectionItem,
+    val steps: List<StepItem>,
+    val doneCount: Int,
+    val skippedCount: Int
+) {
+    val totalCount: Int get() = steps.size
+    val pendingCount: Int get() = steps.count { it.status == "pending" }
+    val progressPercent: Int get() = if (totalCount > 0) (doneCount * 100 / totalCount) else 0
+    val isComplete: Boolean get() = totalCount == 10 && pendingCount == 0
+}
+
+/**
+ * Прогрес цілі
+ */
+data class GoalProgress(
+    val overallPercent: Int,
+    val tasksCompleted: Int,
+    val tasksTotal: Int,
+    val stepsCompleted: Int,
+    val stepsInProgress: Int,
+    val stepsTotal: Int,
+    val currentWeek: Int
+)
+
+// ════════════════════════════════════════════════════════════════
+// DEPRECATED DATA CLASSES — для зворотної сумісності
+// ════════════════════════════════════════════════════════════════
+
+@Deprecated("Use BlockStats instead")
 data class WeekStats(
     val total: Int,
     val done: Int,
@@ -1290,15 +1575,9 @@ data class WeekStats(
     val progressPercent: Int get() = if (total > 0) (done * 100 / total) else 0
 }
 
-/**
- * v1.6: Прогрес цілі
- */
-data class GoalProgress(
-    val overallPercent: Int,       // Загальний прогрес 0-100%
-    val tasksCompleted: Int,       // Виконано завдань
-    val tasksTotal: Int,           // Всього завдань
-    val stepsCompleted: Int,       // Завершено кроків
-    val stepsInProgress: Int,      // Кроків в процесі
-    val stepsTotal: Int,           // Всього кроків
-    val currentWeek: Int           // Поточний тиждень
+@Deprecated("Use DirectionWithSteps instead")
+data class StepWithTasks(
+    val step: StrategicStepItem,
+    val tasks: List<WeeklyTaskItem>,
+    val isActiveForWeek: Boolean
 )
